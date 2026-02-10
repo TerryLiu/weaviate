@@ -1,39 +1,39 @@
-## Weaviate 指标
+## Weaviate Metrics
 
-本文档是 Weaviate 暴露的 Prometheus 指标的唯一权威来源。它解释了我们测量的内容和原因、如何使用这些指标，以及我们如何保持指标集的精简和成本效益。
+This document is the single source of truth for Prometheus metrics exposed by Weaviate. It explains what we measure and why, how to use the metrics, and how we keep the set lean and cost‑effective.
 
-### 目的
+### Purpose
 
-- 提供指标的规范列表、其含义和预期用途
-- 标准化团队如何解释和构建仪表板/告警
-- 通过将运营需求与分析需求分离来控制成本和标签基数
+- Provide a canonical list of metrics, their meaning, and intended usage
+- Standardize how teams interpret and build dashboards/alerts
+- Control cost and label cardinality by separating operational from analytical needs
 
-### 权威来源
+### Source of truth
 
-- 此文件（`docs/metrics.md`）具有权威性。任何指标变更（添加/修改/废弃）都必须在此处的正确部分反映出来
-- 此处的类别和使用状态定义了指标应该存在的位置以及应该如何使用
+- This file (`docs/metrics.md`) is authoritative. Any metric changes (add/modify/deprecate) must be reflected here in the correct section.
+- Category and Usage Status here define where a metric should live and how it should be used.
 
-### 使用类别
+### Usage categories
 
-- 🎯 活跃（仪表板）：适合仪表板的核心指标；使用稳定、有界的标签
-- ⚙️ 活跃（运营）：健康/运行状态和后台进程；尽可能采样
-- 🚨 告警：最小化、基于症状的告警，标签基数低
-- 📊 分析（可能移出 Prometheus）：调试/分析；避免在 Prometheus 中长期保留/高基数
-- ‼️ 可废弃：废弃候选；使用者应迁移出去
-- 🗑️ 已废弃：已从代码库中移除；记录一个发布周期以帮助迁移；从仪表板/告警中移除并删除记录规则
+- 🎯 Active (dashboard): core metrics suitable for dashboards; use stable, bounded labels
+- ⚙️ Active (operational): health/run-state and background processes; sample where possible
+- 🚨 Alerting: minimal, symptom based alerts with low cardinality
+- 📊 Analytical (could be moved out of Prometheus): debugging/analysis; avoid long retention/high cardinality in Prometheus
+- ‼️ Can be deprecated: candidates for removal; consumers should migrate off
+- 🗑️ Deprecated: removed from codebase; documented for one release cycle to aid migration; remove from dashboards/alerts and drop recording rules
 
-### 成本和基数指导原则
+### Cost and cardinality guidance
 
-- 优先使用带有少量有界标签集的计数器/仪表
-- 避免每租户/每类/每路由的标签爆炸，除非对运营至关重要
-- 将探索性或宽标签分析移到日志、追踪或外部存储中
+- Prefer counters/gauges with a small, bounded label set
+- Avoid per-tenant/per-class/per-route label explosions unless essential for operations
+- Move exploratory or wide-label analytics to logs, traces, or external stores
 
-### 变更管理
+### Change management
 
-- 添加：包括类型、标签、类别和标签理由
-- 更改标签：指出基数影响和迁移步骤
-- 废弃：移至 ‼️ 可废弃，在一个小版本中保持，然后移除
-- 告警：在仪表板中记录阈值和运行手册链接，不在此处
+- Adding: include type, labels, category, and justification for labels
+- Changing labels: call out cardinality impact and migration steps
+- Deprecating: move to ‼️ Can be deprecated, keep for one minor release, then remove
+- Alerting: document thresholds and runbook links in dashboards, not here
 
 ---
 
