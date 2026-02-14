@@ -4,30 +4,31 @@
 //  \ V  V /  __/ (_| |\ V /| | (_| | ||  __/
 //   \_/\_/ \___|\__,_| \_/ |_|\__,_|\__\___|
 //
-//  Copyright © 2016 - 2026 Weaviate B.V. All rights reserved.
+//  版权所有 © 2016 - 2026 Weaviate B.V. 保留所有权利。
 //
-//  CONTACT: hello@weaviate.io
+//  联系方式: hello@weaviate.io
 //
 
+// REST API 配置包
 package rest
 
 import (
-	"context"
-	"encoding/base64"
-	"encoding/json"
-	"fmt"
-	"maps"
-	"net"
-	"net/http"
-	_ "net/http/pprof"
-	"os"
-	"path/filepath"
-	"regexp"
-	goruntime "runtime"
-	"runtime/debug"
-	"strconv"
-	"strings"
-	"time"
+	"context"           // 上下文管理
+	"encoding/base64"   // Base64 编码解码
+	"encoding/json"     // JSON 序列化反序列化
+	"fmt"               // 格式化输入输出
+	"maps"              // 映射工具函数
+	"net"               // 网络相关功能
+	"net/http"          // HTTP 客户端和服务端实现
+	_ "net/http/pprof"  // 性能分析工具
+	"os"                // 操作系统功能
+	"path/filepath"     // 文件路径操作
+	"regexp"            // 正则表达式
+	goruntime "runtime" // Go 运行时
+	"runtime/debug"     // 运行时调试功能
+	"strconv"           // 字符串转换
+	"strings"           // 字符串操作
+	"time"              // 时间处理
 
 	"github.com/KimMachineGun/automemlimit/memlimit"
 	armonmetrics "github.com/armon/go-metrics"
@@ -162,59 +163,68 @@ import (
 	"github.com/weaviate/weaviate/usecases/traverser"
 )
 
+// 最低要求的 Contextionary 版本号
 const MinimumRequiredContextionaryVersion = "1.0.2"
 
+// 创建服务器配置函数
+// 返回一个用于配置 HTTP 服务器的函数
 func makeConfigureServer(appState *state.State) func(*http.Server, string, string) {
 	return func(s *http.Server, scheme, addr string) {
-		// Add properties to the config
+		// 将主机名和协议方案添加到配置中
 		appState.ServerConfig.Hostname = addr
 		appState.ServerConfig.Scheme = scheme
 	}
 }
 
+// 向量仓库接口定义
+// 组合了多个接口以提供完整的向量存储功能
 type vectorRepo interface {
-	objects.BatchVectorRepo
-	traverser.VectorSearcher
-	classification.VectorRepo
-	SetSchemaGetter(schema.SchemaGetter)
-	WaitForStartup(ctx context.Context) error
-	Shutdown(ctx context.Context) error
+	objects.BatchVectorRepo      // 批量向量操作接口
+	traverser.VectorSearcher     // 向量搜索接口
+	classification.VectorRepo    // 分类向量接口
+	SetSchemaGetter(schema.SchemaGetter) // 设置模式获取器
+	WaitForStartup(ctx context.Context) error // 等待启动完成
+	Shutdown(ctx context.Context) error       // 关闭服务
 }
 
+// 获取 CPU 核心数
+// 从 cgroup 的 cpuset 文件中读取可用的 CPU 核心信息
 func getCores() (int, error) {
 	cpuset, err := os.ReadFile("/sys/fs/cgroup/cpuset/cpuset.cpus")
 	if err != nil {
-		return 0, errors.Wrap(err, "read cpuset")
+		return 0, errors.Wrap(err, "读取 cpuset 文件失败")
 	}
 	return calcCPUs(strings.TrimSpace(string(cpuset)))
 }
 
+// 计算 CPU 核心数
+// 解析 CPU 字符串格式（如 "0-3,5,7-9"）并计算总核心数
 func calcCPUs(cpuString string) (int, error) {
 	cores := 0
 	if cpuString == "" {
 		return 0, nil
 	}
 
-	// Split by comma to handle multiple ranges
+	// 按逗号分割处理多个范围
 	ranges := strings.Split(cpuString, ",")
 	for _, r := range ranges {
-		// Check if it's a range (contains a hyphen)
+		// 检查是否为范围格式（包含连字符）
 		if strings.Contains(r, "-") {
 			parts := strings.Split(r, "-")
 			if len(parts) != 2 {
-				return 0, fmt.Errorf("invalid CPU range format: %s", r)
+				return 0, fmt.Errorf("无效的 CPU 范围格式: %s", r)
 			}
 			start, err := strconv.Atoi(parts[0])
 			if err != nil {
-				return 0, fmt.Errorf("invalid start of CPU range: %s", parts[0])
+				return 0, fmt.Errorf("无效的 CPU 范围起始值: %s", parts[0])
 			}
 			end, err := strconv.Atoi(parts[1])
 			if err != nil {
-				return 0, fmt.Errorf("invalid end of CPU range: %s", parts[1])
+				return 0, fmt.Errorf("无效的 CPU 范围结束值: %s", parts[1])
 			}
 			cores += end - start + 1
 		} else {
-			// Single CPU
+			// 单个 CPU 核心
 			cores++
 		}
 	}
@@ -222,33 +232,36 @@ func calcCPUs(cpuString string) (int, error) {
 	return cores, nil
 }
 
+// 创建应用状态
+// 初始化整个应用程序的状态，包括配置、数据库、模块等核心组件
 func MakeAppState(ctx, serverShutdownCtx context.Context, options *swag.CommandLineOptionsGroup) *state.State {
-	build.Version = ParseVersionFromSwaggerSpec() // Version is always static and loaded from swagger spec.
+	build.Version = ParseVersionFromSwaggerSpec() // 版本号始终从 swagger 规范静态加载
 
-	// config.ServerVersion is deprecated: It's there to be backward compatible
-	// use build.Version instead.
+	// config.ServerVersion 已弃用：为了向后兼容而保留
+	// 请使用 build.Version 替代
 	config.ServerVersion = build.Version
 
 	appState := startupRoutine(ctx, serverShutdownCtx, options)
 
-	// Initialize OpenTelemetry tracing
+	// 初始化 OpenTelemetry 追踪
 	if err := opentelemetry.Init(appState.Logger); err != nil {
 		appState.Logger.
 			WithField("action", "startup").WithError(err).
-			Error("failed to initialize OpenTelemetry")
+			Error("初始化 OpenTelemetry 失败")
 	}
 
 	if appState.ServerConfig.Config.Monitoring.Enabled {
+		// 初始化 HTTP 和 gRPC 服务器监控指标
 		appState.HTTPServerMetrics = monitoring.NewHTTPServerMetrics(monitoring.DefaultMetricsNamespace, prometheus.DefaultRegisterer)
 		appState.GRPCServerMetrics = monitoring.NewGRPCServerMetrics(monitoring.DefaultMetricsNamespace, prometheus.DefaultRegisterer)
 
+		// 初始化租户活动处理器
 		appState.TenantActivity = tenantactivity.NewHandler()
 
-		// Since we are scraping prometheus.DefaultRegisterer, it already has
-		// a go collector configured by default in internal module init().
-		// However, the go collector configured by default is missing some interesting metrics,
-		// therefore, we have to first unregister it so there are no duplicate metric declarations
-		// and then register extended collector once again.
+		// 由于我们正在抓取 prometheus.DefaultRegisterer，它已经在内部模块初始化时默认配置了
+		// go 收集器。但是，默认配置的 go 收集器缺少一些有趣的指标，
+		// 因此，我们必须先注销它以避免重复的指标声明，
+		// 然后重新注册扩展收集器。
 		prometheus.Unregister(collectors.NewGoCollector())
 		prometheus.MustRegister(collectors.NewGoCollector(
 			collectors.WithGoCollectorRuntimeMetrics(collectors.GoRuntimeMetricsRule{
@@ -256,34 +269,36 @@ func MakeAppState(ctx, serverShutdownCtx context.Context, options *swag.CommandL
 			}),
 		))
 
-		// export build tags to prometheus metric
+		// 导出构建标签到 prometheus 指标
 		build.SetPrometheusBuildInfo()
 		prometheus.MustRegister(version.NewCollector(build.AppName))
 
+		// 配置 Armon Prometheus 选项
 		opts := armonprometheus.PrometheusOpts{
-			Expiration: 0, // never expire any metrics,
+			Expiration: 0, // 永不使指标过期
 			Registerer: prometheus.DefaultRegisterer,
 		}
 
 		sink, err := armonprometheus.NewPrometheusSinkFrom(opts)
 		if err != nil {
-			appState.Logger.WithField("action", "startup").WithError(err).Fatal("failed to create prometheus sink for raft metrics")
+			appState.Logger.WithField("action", "startup").WithError(err).Fatal("创建 raft 指标的 prometheus 接收器失败")
 		}
 
-		cfg := armonmetrics.DefaultConfig("weaviate_internal") // to differentiate it's coming from internal/dependency packages.
-		cfg.EnableHostname = false                             // no `host` label
-		cfg.EnableHostnameLabel = false                        // no `hostname` label
-		cfg.EnableServiceLabel = false                         // no `service` label
-		cfg.EnableRuntimeMetrics = false                       // runtime metrics already provided by prometheus
-		cfg.EnableTypePrefix = true                            // to have some meaningful suffix to identify type of metrics.
-		cfg.TimerGranularity = time.Second                     // time should always in seconds
+		// 配置 Armon 指标
+		cfg := armonmetrics.DefaultConfig("weaviate_internal") // 区分来自内部/依赖包的指标
+		cfg.EnableHostname = false                             // 不添加 `host` 标签
+		cfg.EnableHostnameLabel = false                        // 不添加 `hostname` 标签
+		cfg.EnableServiceLabel = false                         // 不添加 `service` 标签
+		cfg.EnableRuntimeMetrics = false                       // 运行时指标已由 prometheus 提供
+		cfg.EnableTypePrefix = true                            // 添加有意义的后缀来识别指标类型
+		cfg.TimerGranularity = time.Second                     // 时间应始终以秒为单位
 
 		_, err = armonmetrics.NewGlobal(cfg, sink)
 		if err != nil {
-			appState.Logger.WithField("action", "startup").WithError(err).Fatal("failed to create metric registry raft metrics")
+			appState.Logger.WithField("action", "startup").WithError(err).Fatal("创建指标注册表 raft 指标失败")
 		}
 
-		// only monitoring tool supported at the moment is prometheus
+		// 目前唯一支持的监控工具是 prometheus
 		enterrors.GoWrapper(func() {
 			mux := http.NewServeMux()
 			mux.Handle("/metrics", promhttp.Handler())
@@ -294,29 +309,28 @@ func MakeAppState(ctx, serverShutdownCtx context.Context, options *swag.CommandL
 
 	if appState.ServerConfig.Config.Sentry.Enabled {
 		err := sentry.Init(sentry.ClientOptions{
-			// Setup related config
+			// 设置相关配置
 			Dsn:         appState.ServerConfig.Config.Sentry.DSN,
 			Debug:       appState.ServerConfig.Config.Sentry.Debug,
 			Release:     "weaviate-core@" + build.Version,
 			Environment: appState.ServerConfig.Config.Sentry.Environment,
-			// Enable tracing if requested
+			// 如果请求则启用追踪
 			EnableTracing:    !appState.ServerConfig.Config.Sentry.TracingDisabled,
 			AttachStacktrace: true,
-			// Sample rates based on the config
+			// 基于配置的采样率
 			SampleRate:         appState.ServerConfig.Config.Sentry.ErrorSampleRate,
 			ProfilesSampleRate: appState.ServerConfig.Config.Sentry.ProfileSampleRate,
 			TracesSampler: sentry.TracesSampler(func(ctx sentry.SamplingContext) float64 {
-				// Inherit decision from parent transaction (if any) if it is sampled or not
+				// 从父事务继承决策（如果有的话）是否采样
 				if ctx.Parent != nil && ctx.Parent.Sampled != sentry.SampledUndefined {
 					return 1.0
 				}
 
-				// Filter out uneeded traces
+				// 过滤掉不需要的追踪
 				switch ctx.Span.Name {
-				// We are not interested in traces related to metrics endpoint
+				// 我们对与指标端点相关的追踪不感兴趣
 				case "GET /metrics":
-				// These are some usual internet bot that will spam the server. Won't catch them all but we can reduce
-				// the number a bit
+				// 这些是一些常见的网络机器人会垃圾邮件服务器。虽然不能全部捕获，但我们可以减少一些数量
 				case "GET /favicon.ico":
 				case "GET /t4":
 				case "GET /ab2g":
@@ -330,44 +344,48 @@ func MakeAppState(ctx, serverShutdownCtx context.Context, options *swag.CommandL
 					return 0.0
 				}
 
-				// Filter out graphql queries, currently we have no context intrumentation around it and it's therefore
-				// just a blank line with 0 info except graphql resolve -> do -> return.
+				// 过滤掉 graphql 查询，目前我们没有围绕它的上下文检测，因此
+				// 除了 graphql resolve -> do -> return 之外，只是一行空白信息。
 				if ctx.Span.Name == "POST /v1/graphql" {
 					return 0.0
 				}
 
-				// Return the configured sample rate otherwise
+				// 否则返回配置的采样率
 				return appState.ServerConfig.Config.Sentry.TracesSampleRate
 			}),
 		})
 		if err != nil {
 			appState.Logger.
 				WithField("action", "startup").WithError(err).
-				Fatal("sentry initialization failed")
+				Fatal("sentry 初始化失败")
 		}
 
 		sentry.ConfigureScope(func(scope *sentry.Scope) {
-			// Set cluster ID and cluster owner using sentry user feature to distinguish multiple clusters in the UI
+			// 使用 sentry 用户功能设置集群 ID 和集群所有者，以便在 UI 中区分多个集群
 			scope.SetUser(sentry.User{
 				ID:       appState.ServerConfig.Config.Sentry.ClusterId,
 				Username: appState.ServerConfig.Config.Sentry.ClusterOwner,
 			})
-			// Set any tags defined
+			// 设置任何定义的标签
 			for key, value := range appState.ServerConfig.Config.Sentry.Tags {
 				scope.SetTag(key, value)
 			}
 		})
 	}
 
+	// 限制资源使用
 	limitResources(appState)
 
+	// 创建集群 HTTP 客户端
 	appState.ClusterHttpClient = reasonableHttpClient(appState.ServerConfig.Config.Cluster.AuthConfig, appState.ServerConfig.Config.MinimumInternalTimeout)
+	// 创建内存监控器
 	appState.MemWatch = memwatch.NewMonitor(memwatch.LiveHeapReader, debug.SetMemoryLimit, 0.97)
 
 	var vectorRepo vectorRepo
 	// var vectorMigrator schema.Migrator
 	// var migrator schema.Migrator
 
+	// 初始化指标注册器
 	metricsRegisterer := monitoring.NoopRegisterer
 	if appState.ServerConfig.Config.Monitoring.Enabled {
 		promMetrics := monitoring.GetMetrics()
@@ -375,53 +393,63 @@ func MakeAppState(ctx, serverShutdownCtx context.Context, options *swag.CommandL
 		appState.Metrics = promMetrics
 	}
 
-	// TODO: configure http transport for efficient intra-cluster comm
+	// TODO: 配置 HTTP 传输以实现高效的集群内通信
+	// 创建远程索引客户端
 	remoteIndexClient := clients.NewRemoteIndex(appState.ClusterHttpClient)
+	// 创建远程节点客户端
 	remoteNodesClient := clients.NewRemoteNode(appState.ClusterHttpClient)
+	// 创建复制客户端
 	replicationClient := clients.NewReplicationClient(appState.ClusterHttpClient)
+	// 创建数据库仓库
 	repo, err := db.New(appState.Logger, appState.Cluster.LocalName(), db.Config{
+		// 服务器版本配置
 		ServerVersion:                       config.ServerVersion,
 		GitHash:                             build.Revision,
+		// 内存表配置
 		MemtablesFlushDirtyAfter:            appState.ServerConfig.Config.Persistence.MemtablesFlushDirtyAfter,
 		MemtablesInitialSizeMB:              10,
 		MemtablesMaxSizeMB:                  appState.ServerConfig.Config.Persistence.MemtablesMaxSizeMB,
 		MemtablesMinActiveSeconds:           appState.ServerConfig.Config.Persistence.MemtablesMinActiveDurationSeconds,
 		MemtablesMaxActiveSeconds:           appState.ServerConfig.Config.Persistence.MemtablesMaxActiveDurationSeconds,
+		// MMap 相关配置
 		MinMMapSize:                         appState.ServerConfig.Config.Persistence.MinMMapSize,
 		LazySegmentsDisabled:                appState.ServerConfig.Config.Persistence.LazySegmentsDisabled,
 		SegmentInfoIntoFileNameEnabled:      appState.ServerConfig.Config.Persistence.SegmentInfoIntoFileNameEnabled,
 		WriteMetadataFilesEnabled:           appState.ServerConfig.Config.Persistence.WriteMetadataFilesEnabled,
 		MaxReuseWalSize:                     appState.ServerConfig.Config.Persistence.MaxReuseWalSize,
+		// LSM 段清理配置
 		SegmentsCleanupIntervalSeconds:      appState.ServerConfig.Config.Persistence.LSMSegmentsCleanupIntervalSeconds,
 		SeparateObjectsCompactions:          appState.ServerConfig.Config.Persistence.LSMSeparateObjectsCompactions,
 		MaxSegmentSize:                      appState.ServerConfig.Config.Persistence.LSMMaxSegmentSize,
 		CycleManagerRoutinesFactor:          appState.ServerConfig.Config.Persistence.LSMCycleManagerRoutinesFactor,
 		IndexRangeableInMemory:              appState.ServerConfig.Config.Persistence.IndexRangeableInMemory,
+		// 数据路径和查询配置
 		RootPath:                            appState.ServerConfig.Config.Persistence.DataPath,
 		QueryLimit:                          appState.ServerConfig.Config.QueryDefaults.Limit,
 		QueryMaximumResults:                 appState.ServerConfig.Config.QueryMaximumResults,
 		QueryHybridMaximumResults:           appState.ServerConfig.Config.QueryHybridMaximumResults,
 		QueryNestedRefLimit:                 appState.ServerConfig.Config.QueryNestedCrossReferenceLimit,
 		MaxImportGoroutinesFactor:           appState.ServerConfig.Config.MaxImportGoroutinesFactor,
+		// 向量维度跟踪配置
 		TrackVectorDimensions:               appState.ServerConfig.Config.TrackVectorDimensions || appState.Modules.UsageEnabled(),
 		TrackVectorDimensionsInterval:       appState.ServerConfig.Config.TrackVectorDimensionsInterval,
 		UsageEnabled:                        appState.Modules.UsageEnabled(),
 		ResourceUsage:                       appState.ServerConfig.Config.ResourceUsage,
+		// 性能优化配置
 		AvoidMMap:                           appState.ServerConfig.Config.AvoidMmap,
 		DisableLazyLoadShards:               appState.ServerConfig.Config.DisableLazyLoadShards,
 		ForceFullReplicasSearch:             appState.ServerConfig.Config.ForceFullReplicasSearch,
 		TransferInactivityTimeout:           appState.ServerConfig.Config.TransferInactivityTimeout,
+		// 对象 TTL 配置
 		ObjectsTTLBatchSize:                 appState.ServerConfig.Config.ObjectsTTLBatchSize,
 		ObjectsTTLPauseEveryNoBatches:       appState.ServerConfig.Config.ObjectsTTLPauseEveryNoBatches,
 		ObjectsTTLPauseDuration:             appState.ServerConfig.Config.ObjectsTTLPauseDuration,
 		ObjectsTTLConcurrencyFactor:         appState.ServerConfig.Config.ObjectsTTLConcurrencyFactor,
 		LSMEnableSegmentsChecksumValidation: appState.ServerConfig.Config.Persistence.LSMEnableSegmentsChecksumValidation,
-		// Pass dummy replication config with minimum factor 1. Otherwise the
-		// setting is not backward-compatible. The user may have created a class
-		// with factor=1 before the change was introduced. Now their setup would no
-		// longer start up if the required minimum is now higher than 1. We want
-		// the required minimum to only apply to newly created classes - not block
-		// loading existing ones.
+		// 传递最小因子为 1 的虚拟复制配置。否则该设置不向后兼容。
+		// 用户可能在引入更改之前创建了因子=1的类。现在如果所需的最小值高于1，
+		// 他们的设置将无法启动。我们希望所需的最小值仅适用于新创建的类 - 
+		// 而不是阻止加载现有的类。
 		Replication: replication.GlobalConfig{
 			MinimumFactor:                     1,
 			AsyncReplicationDisabled:          appState.ServerConfig.Config.Replication.AsyncReplicationDisabled,
@@ -449,83 +477,100 @@ func MakeAppState(ctx, serverShutdownCtx context.Context, options *swag.CommandL
 		AsyncIndexingEnabled:                         appState.ServerConfig.Config.AsyncIndexingEnabled,
 		HFreshEnabled:                                appState.ServerConfig.Config.HFreshEnabled,
 		OperationalMode:                              appState.ServerConfig.Config.OperationalMode,
-	}, remoteIndexClient, appState.Cluster, remoteNodesClient, replicationClient, appState.Metrics, appState.MemWatch, nil, nil, nil) // TODO client
+	}, remoteIndexClient, appState.Cluster, remoteNodesClient, replicationClient, appState.Metrics, appState.MemWatch, nil, nil, nil) // TODO 客户端
 	if err != nil {
 		appState.Logger.
 			WithField("action", "startup").WithError(err).
-			Fatal("invalid new DB")
+			Fatal("无效的新数据库")
 	}
 
+	// 设置数据库实例
 	appState.DB = repo
 	if appState.ServerConfig.Config.Monitoring.Enabled {
 		appState.TenantActivity.SetSource(appState.DB)
 	}
 
+	// 设置调试处理器
 	setupDebugHandlers(appState)
+	// 设置 Go 性能分析
 	setupGoProfiling(appState.ServerConfig.Config, appState.Logger)
 
+	// 创建迁移器
 	migrator := db.NewMigrator(repo, appState.Logger, appState.Cluster.LocalName())
 	migrator.SetNode(appState.Cluster.LocalName())
-	// TODO-offload: "offload-s3" has to come from config when enable modules more than S3
+	// TODO-offload: 当启用超过 S3 的模块时，"offload-s3" 必须来自配置
 	migrator.SetOffloadProvider(appState.Modules, "offload-s3")
 	appState.Migrator = migrator
 
+	// 设置向量仓库
 	vectorRepo = repo
 	// migrator = vectorMigrator
+	// 创建探索器
 	explorer := traverser.NewExplorer(repo, appState.Logger, appState.Modules, traverser.NewMetrics(appState.Metrics), appState.ServerConfig.Config)
+	// 创建模式仓库
 	schemaRepo := schemarepo.NewStore(appState.ServerConfig.Config.Persistence.DataPath, appState.Logger)
 	if err = schemaRepo.Open(); err != nil {
 		appState.Logger.
 			WithField("action", "startup").WithError(err).
-			Fatal("could not initialize schema repo")
+			Fatal("无法初始化模式仓库")
 		os.Exit(1)
 	}
 
+	// 创建本地分类器仓库
 	localClassifierRepo, err := classifications.NewRepo(
 		appState.ServerConfig.Config.Persistence.DataPath, appState.Logger)
 	if err != nil {
 		appState.Logger.
 			WithField("action", "startup").WithError(err).
-			Fatal("could not initialize classifications repo")
+			Fatal("无法初始化分类器仓库")
 		os.Exit(1)
 	}
 
-	// TODO: configure http transport for efficient intra-cluster comm
+	// TODO: 配置 HTTP 传输以实现高效的集群内通信
+	// 创建集群分类客户端
 	classificationsTxClient := clients.NewClusterClassifications(appState.ClusterHttpClient)
+	// 创建分布式分类仓库
 	classifierRepo := classifications.NewDistributeRepo(classificationsTxClient,
 		appState.Cluster, localClassifierRepo, appState.Logger)
 	appState.ClassificationRepo = classifierRepo
 
+	// 解析节点到端口的映射
 	server2port, err := parseNode2Port(appState)
 	if len(server2port) == 0 || err != nil {
 		appState.Logger.
 			WithField("action", "startup").
 			WithField("raft-join", appState.ServerConfig.Config.Raft.Join).
 			WithError(err).
-			Fatal("parsing raft-join")
+			Fatal("解析 raft-join 失败")
 		os.Exit(1)
 	}
 
+	// 获取节点名称和数据路径
 	nodeName := appState.Cluster.LocalName()
 	dataPath := appState.ServerConfig.Config.Persistence.DataPath
 
+	// 创建模式解析器
 	schemaParser := schema.NewParser(appState.Cluster, vectorIndex.ParseAndValidateConfig, migrator, appState.Modules, appState.ServerConfig.Config.DefaultQuantization)
 
+	// 获取 gRPC 和认证配置
 	grpcConfig := appState.ServerConfig.Config.GRPC
 	authConfig := appState.ServerConfig.Config.Cluster.AuthConfig
 
 	var creds credentials.TransportCredentials
 
+	// 判断是否使用 TLS
 	useTLS := len(grpcConfig.CertFile) > 0
 
 	if useTLS {
 		creds = credentials.NewClientTLSFromCert(nil, "")
 	} else {
-		creds = insecure.NewCredentials() // use insecure credentials for testing
+		creds = insecure.NewCredentials() // 测试时使用不安全的凭证
 	}
 
+	// 设置 gRPC 拨号选项
 	opts := []grpc.DialOption{grpc.WithTransportCredentials(creds)}
 
+	// 如果启用了基本认证，则添加认证拦截器
 	if authConfig.BasicAuth.Enabled() {
 		authHeader := grpcconn.BasicAuthHeader(authConfig.BasicAuth.Username, authConfig.BasicAuth.Password)
 		opts = append(opts,
@@ -534,12 +579,14 @@ func MakeAppState(ctx, serverShutdownCtx context.Context, options *swag.CommandL
 		)
 	}
 
+	// 计算最大消息大小和初始连接窗口大小
 	maxSize := clusterapigrpc.GetMaxMessageSize(appState.ServerConfig.Config.ReplicationEngineFileCopyChunkSize)
 	initialConnWindowSize := clusterapigrpc.GetInitialConnWindowSize(
 		appState.ServerConfig.Config.ReplicationEngineFileCopyChunkSize,
 		appState.ServerConfig.Config.ReplicationEngineFileCopyWorkers,
 	)
 
+	// 添加 gRPC 调用选项
 	opts = append(opts,
 		grpc.WithDefaultCallOptions(
 			grpc.MaxCallRecvMsgSize(maxSize),
@@ -551,46 +598,58 @@ func MakeAppState(ctx, serverShutdownCtx context.Context, options *swag.CommandL
 		grpc.WithWriteBufferSize(clusterapigrpc.WRITE_BUFFER_SIZE),
 	)
 
+	// 获取 gRPC 连接配置
 	grpcMaxOpenConns := appState.ServerConfig.Config.GRPC.MaxOpenConns
 	grpcIddleConnTimeout := appState.ServerConfig.Config.GRPC.IdleConnTimeout
 
+	// 创建 gRPC 连接管理器
 	appState.GRPCConnManager = grpcconn.NewConnManager(grpcMaxOpenConns, grpcIddleConnTimeout,
 		metricsRegisterer, appState.Logger, opts...)
 
+	// 创建远程客户端工厂函数
 	remoteClientFactory := func(ctx context.Context, address string) (copier.FileReplicationServiceClient, error) {
 		clientConn, err := appState.GRPCConnManager.GetConn(address)
 		if err != nil {
-			return nil, fmt.Errorf("failed to get gRPC connection: %w", err)
+			return nil, fmt.Errorf("获取 gRPC 连接失败: %w", err)
 		}
 		return protocol.NewFileReplicationServiceClient(clientConn), nil
 	}
 
+	// 设置节点选择器
 	var nodeSelector cluster.NodeSelector = appState.Cluster
 
+	// 创建副本复制器
 	replicaCopier := copier.New(remoteClientFactory, remoteIndexClient, nodeSelector,
 		appState.ServerConfig.Config.ReplicationEngineFileCopyWorkers, dataPath, appState.DB, nodeName, appState.Logger)
 
+	// 创建 Raft 集群配置
 	rConfig := rCluster.Config{
+		// 工作目录和节点标识
 		WorkDir:                         filepath.Join(dataPath, config.DefaultRaftDir),
 		NodeID:                          nodeName,
 		Host:                            appState.Cluster.LocalAddr(),
 		BindAddr:                        appState.Cluster.LocalBindAddr(),
+		// 端口配置
 		RaftPort:                        appState.ServerConfig.Config.Raft.Port,
 		RPCPort:                         appState.ServerConfig.Config.Raft.InternalRPCPort,
 		RaftRPCMessageMaxSize:           appState.ServerConfig.Config.Raft.RPCMessageMaxSize,
+		// 超时配置
 		BootstrapTimeout:                appState.ServerConfig.Config.Raft.BootstrapTimeout,
 		BootstrapExpect:                 appState.ServerConfig.Config.Raft.BootstrapExpect,
 		HeartbeatTimeout:                appState.ServerConfig.Config.Raft.HeartbeatTimeout,
 		ElectionTimeout:                 appState.ServerConfig.Config.Raft.ElectionTimeout,
 		LeaderLeaseTimeout:              appState.ServerConfig.Config.Raft.LeaderLeaseTimeout,
 		TimeoutsMultiplier:              appState.ServerConfig.Config.Raft.TimeoutsMultiplier.Get(),
+		// 快照配置
 		SnapshotInterval:                appState.ServerConfig.Config.Raft.SnapshotInterval,
 		SnapshotThreshold:               appState.ServerConfig.Config.Raft.SnapshotThreshold,
 		TrailingLogs:                    appState.ServerConfig.Config.Raft.TrailingLogs,
 		ConsistencyWaitTimeout:          appState.ServerConfig.Config.Raft.ConsistencyWaitTimeout,
+		// 元数据配置
 		MetadataOnlyVoters:              appState.ServerConfig.Config.Raft.MetadataOnlyVoters,
 		EnableOneNodeRecovery:           appState.ServerConfig.Config.Raft.EnableOneNodeRecovery,
 		ForceOneNodeRecovery:            appState.ServerConfig.Config.Raft.ForceOneNodeRecovery,
+		// 组件配置
 		DB:                              nil,
 		Parser:                          schemaParser,
 		NodeNameToPortMap:               server2port,
@@ -599,17 +658,20 @@ func MakeAppState(ctx, serverShutdownCtx context.Context, options *swag.CommandL
 		IsLocalHost:                     appState.ServerConfig.Config.Cluster.Localhost,
 		LoadLegacySchema:                schemaRepo.LoadLegacySchema,
 		SentryEnabled:                   appState.ServerConfig.Config.Sentry.Enabled,
+		// 权限和认证配置
 		AuthzController:                 appState.AuthzController,
 		RBAC:                            appState.RBAC,
 		DynamicUserController:           appState.APIKey.Dynamic,
 		ReplicaCopier:                   replicaCopier,
 		AuthNConfig:                     appState.ServerConfig.Config.Authentication,
+		// 复制引擎配置
 		ReplicationEngineMaxWorkers:     appState.ServerConfig.Config.ReplicationEngineMaxWorkers,
 		DistributedTasks:                appState.ServerConfig.Config.DistributedTasks,
 		ReplicaMovementEnabled:          appState.ServerConfig.Config.ReplicaMovementEnabled,
 		ReplicaMovementMinimumAsyncWait: appState.ServerConfig.Config.ReplicaMovementMinimumAsyncWait,
 		DrainSleep:                      appState.ServerConfig.Config.Raft.DrainSleep.Get(),
 	}
+	// 检查当前节点是否为投票者
 	for _, name := range appState.ServerConfig.Config.Raft.Join[:rConfig.BootstrapExpect] {
 		if strings.Contains(name, rConfig.NodeID) {
 			rConfig.Voter = true
@@ -617,16 +679,21 @@ func MakeAppState(ctx, serverShutdownCtx context.Context, options *swag.CommandL
 		}
 	}
 
+	// 创建集群服务
 	appState.ClusterService = rCluster.New(rConfig, appState.AuthzController, appState.AuthzSnapshotter, appState.GRPCServerMetrics)
+	// 设置迁移器的集群引用
 	migrator.SetCluster(appState.ClusterService.Raft)
 
+	// 创建模式执行器
 	executor := schema.NewExecutor(migrator,
 		appState.ClusterService.SchemaReader(),
 		appState.Logger, backup.RestoreClassDir(dataPath),
 	)
 
+	// 获取卸载后端模块
 	offloadmod, _ := appState.Modules.OffloadBackend("offload-s3")
 
+	// 创建集合检索策略配置标志
 	collectionRetrievalStrategyConfigFlag := configRuntime.NewFeatureFlag(
 		configRuntime.CollectionRetrievalStrategyLDKey,
 		string(configRuntime.LeaderOnly),
@@ -635,6 +702,7 @@ func MakeAppState(ctx, serverShutdownCtx context.Context, options *swag.CommandL
 		appState.Logger,
 	)
 
+	// 创建模式管理器
 	schemaManager, err := schema.NewManager(migrator,
 		appState.ClusterService.Raft,
 		appState.ClusterService.SchemaReader(),
@@ -648,56 +716,67 @@ func MakeAppState(ctx, serverShutdownCtx context.Context, options *swag.CommandL
 	if err != nil {
 		appState.Logger.
 			WithField("action", "startup").WithError(err).
-			Fatal("could not initialize schema manager")
+			Fatal("无法初始化模式管理器")
 		os.Exit(1)
 	}
 
+	// 设置应用状态和仓库的相关组件
 	appState.SchemaManager = schemaManager
 	repo.SetNodeSelector(appState.ClusterService.NodeSelector())
 	repo.SetSchemaReader(appState.ClusterService.SchemaReader())
 	repo.SetReplicationFSM(appState.ClusterService.ReplicationFsm())
 	repo.SetSchemaGetter(appState.SchemaManager)
 
-	// initialize needed services after all components are ready
+	// 在所有组件准备就绪后初始化所需的服务
 	postInitModules(appState)
 
+	// 创建远程索引和节点接收器
 	appState.RemoteIndexIncoming = sharding.NewRemoteIndexIncoming(repo, appState.ClusterService.SchemaReader(), appState.Modules)
 	appState.RemoteNodeIncoming = sharding.NewRemoteNodeIncoming(repo)
 
+	// 创建备份管理器
 	backupManager := backup.NewHandler(appState.Logger, appState.ServerConfig.Config.Backup, appState.Authorizer,
 		schemaManager, repo, appState.Modules, appState.RBAC, appState.APIKey.Dynamic)
 	appState.BackupManager = backupManager
 
+	// 创建内部服务器并启动
 	appState.InternalServer = clusterapi.NewServer(appState)
 	enterrors.GoWrapper(func() { appState.InternalServer.Serve() }, appState.Logger)
 
+	// 设置各个组件的模式获取器
 	vectorRepo.SetSchemaGetter(schemaManager)
 	explorer.SetSchemaGetter(schemaManager)
 	appState.Modules.SetSchemaGetter(schemaManager)
 
+	// 创建遍历器
 	appState.Traverser = traverser.NewTraverser(appState.ServerConfig,
 		appState.Logger, appState.Authorizer, vectorRepo, explorer, schemaManager,
 		appState.Modules, traverser.NewMetrics(appState.Metrics),
 		appState.ServerConfig.Config.MaximumConcurrentGetRequests)
 
+	// 注册模式更新回调
 	updateSchemaCallback := makeUpdateSchemaCall(appState)
 	executor.RegisterSchemaUpdateCallback(updateSchemaCallback)
 
+	// 配置位图缓冲池
 	bitmapBufPool, bitmapBufPoolClose := configureBitmapBufPool(appState)
 	repo.WithBitmapBufPool(bitmapBufPool, bitmapBufPoolClose)
 
+	// 配置重新索引器
 	var reindexCtx context.Context
 	reindexCtx, appState.ReindexCtxCancel = context.WithCancelCause(serverShutdownCtx)
 	reindexer := configureReindexer(appState, reindexCtx)
 	repo.WithReindexer(reindexer)
 
+	// 创建元存储就绪状态管理器
 	metaStoreReady := newMetaStoreReady()
 	enterrors.GoWrapper(func() {
+		// 打开集群服务和云元存储
 		if err := appState.ClusterService.Open(context.Background(), executor); err != nil {
 			appState.Logger.
 				WithField("action", "startup").
 				WithError(err).
-				Fatal("could not open cloud meta store")
+				Fatal("无法打开云元存储")
 			metaStoreReady.failure(err)
 		} else {
 			metaStoreReady.success()
