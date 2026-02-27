@@ -33,38 +33,67 @@ type batchObjectHandlers struct {
 	metricRequestsTotal restApiRequestsTotal
 }
 
+// addObjects 处理批量创建对象的请求
+// 参数:
+//   - params: 批量创建对象的请求参数，包含HTTP请求上下文和请求体
+//   - principal: 认证主体信息，用于权限验证
+//
+// 返回值:
+//   - middleware.Responder: HTTP响应，可能包含成功创建的对象列表或错误信息
 func (h *batchObjectHandlers) addObjects(params batch.BatchObjectsCreateParams,
 	principal *models.Principal,
 ) middleware.Responder {
+	// 将认证主体信息添加到请求上下文中，用于后续的权限检查
 	ctx := restCtx.AddPrincipalToContext(params.HTTPRequest.Context(), principal)
+	
+	// 获取复制属性配置，用于分布式环境下的数据一致性控制
 	repl, err := getReplicationProperties(params.ConsistencyLevel, nil)
 	if err != nil {
+		// 记录请求失败的指标并返回400错误
 		h.metricRequestsTotal.logError("", err)
 		return batch.NewBatchObjectsCreateBadRequest().
 			WithPayload(errPayloadFromSingleErr(err))
 	}
 
+	// 调用manager执行批量对象创建操作
+	// 参数说明:
+	// - ctx: 带有认证信息的上下文
+	// - principal: 认证主体
+	// - params.Body.Objects: 要创建的对象列表
+	// - params.Body.Fields: 指定要返回的字段
+	// - repl: 复制配置参数
 	objs, err := h.manager.AddObjects(ctx, principal,
 		params.Body.Objects, params.Body.Fields, repl)
+		
 	if err != nil {
+		// 记录请求失败的指标
 		h.metricRequestsTotal.logError("", err)
+		
+		// 根据不同类型的错误返回相应的HTTP状态码
 		switch {
+		// 权限不足错误 - 返回403 Forbidden
 		case errors.As(err, &autherrs.Forbidden{}):
 			return batch.NewBatchObjectsCreateForbidden().
 				WithPayload(errPayloadFromSingleErr(err))
+		// 用户输入无效错误 - 返回422 Unprocessable Entity
 		case errors.As(err, &objects.ErrInvalidUserInput{}):
 			return batch.NewBatchObjectsCreateUnprocessableEntity().
 				WithPayload(errPayloadFromSingleErr(err))
+		// 多租户相关错误 - 返回422 Unprocessable Entity
 		case errors.As(err, &objects.ErrMultiTenancy{}):
 			return batch.NewBatchObjectsCreateUnprocessableEntity().
 				WithPayload(errPayloadFromSingleErr(err))
+		// 其他未预期错误 - 返回500 Internal Server Error
 		default:
 			return batch.NewBatchObjectsCreateInternalServerError().
 				WithPayload(errPayloadFromSingleErr(err))
 		}
 	}
 
+	// 记录请求成功的指标
 	h.metricRequestsTotal.logOk("")
+	
+	// 返回成功响应，包含创建的对象信息
 	return batch.NewBatchObjectsCreateOK().
 		WithPayload(h.objectsResponse(objs))
 }
