@@ -81,26 +81,24 @@ import (
 	"github.com/weaviate/weaviate/usecases/sharding"
 )
 
-// Use runtime.GOMAXPROCS instead of runtime.NumCPU because NumCPU returns
-// the physical CPU cores. However, in a containerization context, that might
-// not be what we want. The physical node could have 128 cores, but we could
-// be cgroup-limited to 2 cores. In that case, we want 2 to be our limit, not
-// 128. It isn't guaranteed that MAXPROCS reflects the cgroup limit, but at
-// least there is a chance that it was set correctly. If not, it defaults to
-// NumCPU anyway, so we're not any worse off.
+// 使用runtime.GOMAXPROCS而非runtime.NumCPU，因为NumCPU返回的是物理CPU核心数。
+// 然而在容器化环境中，这可能不是我们想要的。物理节点可能有128个核心，但我们可能
+// 被cgroup限制为2个核心。在这种情况下，我们希望限制为2而不是128。
+// MAXPROCS不一定能反映cgroup限制，但至少有机会被正确设置。
+// 如果没有，则默认为NumCPU，所以我们不会变得更糟。
 var _NUMCPU = runtime.GOMAXPROCS(0)
 
-// shardMap is a sync.Map which specialized in storing shards
+// shardMap是一个专门用于存储分片的sync.Map
 type shardMap sync.Map
 
-// Range calls f sequentially for each key and value present in the map.
-// If f returns an error, range stops the iteration
+// Range按顺序为map中存在的每个键值对调用f函数。
+// 如果f返回错误，则停止迭代
 func (m *shardMap) Range(f func(name string, shard ShardLike) error) (err error) {
 	(*sync.Map)(m).Range(func(key, value any) bool {
-		// Safe type assertion for key
+		// 对键进行安全的类型断言
 		name, ok := key.(string)
 		if !ok {
-			// Skip invalid keys
+			// 跳过无效的键
 			return true
 		}
 
@@ -117,16 +115,15 @@ func (m *shardMap) Range(f func(name string, shard ShardLike) error) (err error)
 	return err
 }
 
-// RangeConcurrently calls f for each key and value present in the map with at
-// most _NUMCPU executors running in parallel. As opposed to [Range] it does
-// not guarantee an exit on the first error.
+// RangeConcurrently并发地为map中存在的每个键值对调用f函数，最多使用_NUMCPU个执行器并行运行。
+// 与[Range]不同，它不保证在第一个错误时退出。
 func (m *shardMap) RangeConcurrently(logger logrus.FieldLogger, f func(name string, shard ShardLike) error) (err error) {
 	eg := enterrors.NewErrorGroupWrapper(logger)
 	eg.SetLimit(_NUMCPU)
 	(*sync.Map)(m).Range(func(key, value any) bool {
 		name, ok := key.(string)
 		if !ok {
-			// Skip invalid keys
+			// 跳过无效的键
 			return true
 		}
 
@@ -146,11 +143,10 @@ func (m *shardMap) RangeConcurrently(logger logrus.FieldLogger, f func(name stri
 	return eg.Wait()
 }
 
-// Load returns the shard or nil if no shard is present.
-// NOTE: this method does not check if the shard is loaded or not and it could
-// return a lazy shard that is not loaded which could result in loading it if
-// the returned shard is used.
-// Use Loaded if you want to check if the shard is loaded without loading it.
+// Load返回分片，如果不存在则返回nil。
+// 注意：此方法不检查分片是否已加载，可能返回未加载的懒加载分片，
+// 如果使用返回的分片可能会导致其被加载。
+// 如果想在不加载的情况下检查分片是否已加载，请使用Loaded。
 func (m *shardMap) Load(name string) ShardLike {
 	v, ok := (*sync.Map)(m).Load(name)
 	if !ok {
@@ -164,8 +160,8 @@ func (m *shardMap) Load(name string) ShardLike {
 	return shard
 }
 
-// Loaded returns the shard or nil if no shard is present.
-// If it's a lazy shard, only return it if it's loaded.
+// Loaded返回分片，如果不存在则返回nil。
+// 如果是懒加载分片，只有在已加载时才返回。
 func (m *shardMap) Loaded(name string) ShardLike {
 	v, ok := (*sync.Map)(m).Load(name)
 	if !ok {
@@ -177,7 +173,7 @@ func (m *shardMap) Loaded(name string) ShardLike {
 		return nil
 	}
 
-	// If it's a lazy shard, only return it if it's loaded
+	// 如果是懒加载分片，只有在已加载时才返回
 	if lazyShard, ok := shard.(*LazyLoadShard); ok {
 		if !lazyShard.isLoaded() {
 			return nil
@@ -187,13 +183,13 @@ func (m *shardMap) Loaded(name string) ShardLike {
 	return shard
 }
 
-// Store sets a shard giving its name and value
+// Store设置分片，给出其名称和值
 func (m *shardMap) Store(name string, shard ShardLike) {
 	(*sync.Map)(m).Store(name, shard)
 }
 
-// Swap swaps the shard for a key and returns the previous value if any.
-// The loaded result reports whether the key was present.
+// Swap交换键的分片并返回之前的值（如果有）。
+// loaded结果报告键是否存在。
 func (m *shardMap) Swap(name string, shard ShardLike) (previous ShardLike, loaded bool) {
 	v, ok := (*sync.Map)(m).Swap(name, shard)
 	if v == nil || !ok {
@@ -220,97 +216,99 @@ func (m *shardMap) LoadAndDelete(name string) (ShardLike, bool) {
 // Index is the logical unit which contains all the data for one particular
 // class. An index can be further broken up into self-contained units, called
 // Shards, to allow for easy distribution across Nodes
+// Index表示一个索引，包含多个分片和相关的配置信息
 type Index struct {
-	classSearcher           inverted.ClassSearcher // to allow for nested by-references searches
-	shards                  shardMap
-	Config                  IndexConfig
-	globalreplicationConfig *replication.GlobalConfig
+	classSearcher           inverted.ClassSearcher // 允许嵌套的按引用搜索
+	shards                  shardMap               // 分片映射
+	Config                  IndexConfig            // 索引配置
+	globalreplicationConfig *replication.GlobalConfig // 全局复制配置
 
-	getSchema    schemaUC.SchemaGetter
-	schemaReader schemaUC.SchemaReader
-	logger       logrus.FieldLogger
-	remote       *sharding.RemoteIndex
-	stopwords    *stopwords.Detector
-	replicator   *replica.Replicator
+	getSchema    schemaUC.SchemaGetter     // Schema获取器
+	schemaReader schemaUC.SchemaReader    // Schema读取器
+	logger       logrus.FieldLogger        // 日志记录器
+	remote       *sharding.RemoteIndex     // 远程索引客户端
+	stopwords    *stopwords.Detector       // 停用词检测器
+	replicator   *replica.Replicator       // 复制器
 
-	vectorIndexUserConfigLock sync.Mutex
-	vectorIndexUserConfig     schemaConfig.VectorIndexConfig
-	vectorIndexUserConfigs    map[string]schemaConfig.VectorIndexConfig
-	HFreshEnabled             bool
+	vectorIndexUserConfigLock sync.Mutex                            // 向量索引用户配置锁
+	vectorIndexUserConfig     schemaConfig.VectorIndexConfig        // 向量索引用户配置
+	vectorIndexUserConfigs    map[string]schemaConfig.VectorIndexConfig // 多向量索引用户配置
+	HFreshEnabled             bool                                    // HNSW刷新启用标志
 
-	partitioningEnabled  bool
-	AsyncIndexingEnabled bool
+	partitioningEnabled  bool // 分区启用标志
+	AsyncIndexingEnabled bool // 异步索引启用标志
 
-	invertedIndexConfig     schema.InvertedIndexConfig
-	invertedIndexConfigLock sync.Mutex
+	invertedIndexConfig     schema.InvertedIndexConfig // 倒排索引配置
+	invertedIndexConfigLock sync.Mutex                 // 倒排索引配置锁
 
-	// This lock should be used together with the db indexLock.
+	// 此锁应与db indexLock一起使用。
 	//
-	// The db indexlock locks the map that contains all indices against changes and should be used while iterating.
-	// This lock protects this specific index form being deleted while in use. Use Rlock to signal that it is in use.
-	// This way many goroutines can use a specific index in parallel. The delete-routine will try to acquire a RWlock.
+	// db indexlock锁定包含所有索引的map以防止更改，应在迭代时使用。
+	// 此锁保护此特定索引在使用时不被删除。使用Rlock表示正在使用。
+	// 这样多个goroutine可以并行使用特定索引。删除例程将尝试获取RWlock。
 	//
-	// Usage:
-	// Lock the whole db using db.indexLock
-	// pick the indices you want and Rlock them
-	// unlock db.indexLock
-	// Use the indices
-	// RUnlock all picked indices
+	// 使用方法：
+	// 使用db.indexLock锁定整个db
+	// 选择你想要的索引并对它们加Rlock
+	// 解锁db.indexLock
+	// 使用这些索引
+	// 对所有选中的索引执行RUnlock
 	dropIndex sync.RWMutex
 
-	// The other locks in the index should always be called in the given order to prevent deadlocks:
+	// 索引中的其他锁应始终按给定顺序调用以防止死锁：
 	// 1. closeLock
-	// 2. backupLock (for a specific shard)
-	// 3. shardCreateLocks (for a specific shard)
-	closeLock  sync.RWMutex       // protects against closing while doing operations
-	backupLock *esync.KeyRWLocker // prevents writes while a backup is running
-	// prevents concurrent shard status changes. Use .Rlock to secure against status changes and .Lock to change status
-	// Minimize holding the RW lock as it will block other operations on the same shard such as searches or writes.
+	// 2. backupLock（针对特定分片）
+	// 3. shardCreateLocks（针对特定分片）
+	closeLock  sync.RWMutex       // 在执行操作时防止关闭
+	backupLock *esync.KeyRWLocker // 在备份运行时防止写入
+	// 防止并发的分片状态更改。使用.Rlock来防止状态更改，使用.Lock来更改状态
+	// 尽量减少持有RW锁的时间，因为它会阻塞同一分片上的其他操作如搜索或写入。
 	shardCreateLocks *esync.KeyRWLocker
 
-	metrics          *Metrics
-	centralJobQueue  chan job
-	scheduler        *queue.Scheduler
-	indexCheckpoints *indexcheckpoint.Checkpoints
+	metrics          *Metrics                    // 指标收集器
+	centralJobQueue  chan job                    // 中央作业队列
+	scheduler        *queue.Scheduler            // 调度器
+	indexCheckpoints *indexcheckpoint.Checkpoints // 索引检查点
 
-	cycleCallbacks *indexCycleCallbacks
+	cycleCallbacks *indexCycleCallbacks // 索引周期回调
 
-	lastBackup atomic.Pointer[BackupState]
+	lastBackup atomic.Pointer[BackupState] // 最后一次备份状态
 
-	// canceled when either Shutdown or Drop called
-	closingCtx    context.Context
-	closingCancel context.CancelFunc
+	// 在Shutdown或Drop被调用时取消
+	closingCtx    context.Context      // 关闭上下文
+	closingCancel context.CancelFunc   // 关闭取消函数
 
-	// always true if lazy shard loading is off, in the case of lazy shard
-	// loading will be set to true once the last shard was loaded.
-	allShardsReady atomic.Bool
-	allocChecker   memwatch.AllocChecker
+	// 如果懒加载分片关闭则始终为true，在懒加载分片的情况下
+	// 当最后一个分片加载完成后设置为true。
+	allShardsReady atomic.Bool          // 所有分片就绪标志
+	allocChecker   memwatch.AllocChecker // 内存分配检查器
 
-	replicationConfigLock          sync.RWMutex
-	asyncReplicationWorkersLimiter *dynsemaphore.DynamicWeighted
+	replicationConfigLock          sync.RWMutex                // 复制配置锁
+	asyncReplicationWorkersLimiter *dynsemaphore.DynamicWeighted // 异步复制工作者限流器
 
-	shardLoadLimiter  *loadlimiter.LoadLimiter
-	bucketLoadLimiter *loadlimiter.LoadLimiter
+	shardLoadLimiter  *loadlimiter.LoadLimiter  // 分片加载限流器
+	bucketLoadLimiter *loadlimiter.LoadLimiter  // 存储桶加载限流器
 
-	closed bool
+	closed bool // 关闭标志
 
-	shardReindexer ShardReindexerV3
+	shardReindexer ShardReindexerV3 // 分片重新索引器
 
-	router        routerTypes.Router
-	shardResolver *resolver.ShardResolver
-	bitmapBufPool roaringset.BitmapBufPool
+	router        routerTypes.Router        // 路由器
+	shardResolver *resolver.ShardResolver   // 分片解析器
+	bitmapBufPool roaringset.BitmapBufPool  // 位图缓冲池
 }
 
+// ID返回索引的唯一标识符
 func (i *Index) ID() string {
 	return indexID(i.Config.ClassName)
 }
 
+// path返回索引的文件系统路径
 func (i *Index) path() string {
 	return path.Join(i.Config.RootPath, i.ID())
 }
 
-// NewIndex creates an index with the specified amount of shards, using only
-// the shards that are local to a node
+// NewIndex创建一个具有指定分片数量的索引，仅使用本地节点的分片
 func NewIndex(
 	ctx context.Context,
 	cfg IndexConfig,
@@ -337,24 +335,29 @@ func NewIndex(
 	bitmapBufPool roaringset.BitmapBufPool,
 	asyncIndexingEnabled bool,
 ) (*Index, error) {
+	// 添加自定义词典
 	err := tokenizer.AddCustomDict(class.Class, invertedIndexConfig.TokenizerUserDict)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to create new index")
 	}
 
+	// 创建停用词检测器
 	sd, err := stopwords.NewDetectorFromConfig(invertedIndexConfig.Stopwords)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to create new index")
 	}
 
+	// 设置嵌套引用查询限制的默认值
 	if cfg.QueryNestedRefLimit == 0 {
 		cfg.QueryNestedRefLimit = config.DefaultQueryNestedCrossReferenceLimit
 	}
 
+	// 初始化向量索引用户配置映射
 	if vectorIndexUserConfigs == nil {
 		vectorIndexUserConfigs = map[string]schemaConfig.VectorIndexConfig{}
 	}
 
+	// 创建指标收集器
 	metrics, err := NewMetrics(logger, promMetrics, cfg.ClassName.String(), "n/a")
 	if err != nil {
 		return nil, fmt.Errorf("create metrics for index %q: %w", cfg.ClassName.String(), err)
@@ -390,11 +393,13 @@ func NewIndex(
 		HFreshEnabled:           cfg.HFreshEnabled,
 	}
 
+	// 获取删除策略的闭包函数
 	getDeletionStrategy := func() string {
 		return index.DeletionStrategy()
 	}
 
-	// TODO: Fix replica router instantiation to be at the top level
+	// TODO: 修复副本路由器实例化，应该在顶层进行
+	// 创建复制器
 	index.replicator, err = replica.NewReplicator(cfg.ClassName.String(), router, nodeResolver, sg.NodeName(), getDeletionStrategy, replicaClient, promMetrics, logger)
 	if err != nil {
 		return nil, fmt.Errorf("create replicator for index %q: %w", index.ID(), err)
@@ -432,17 +437,24 @@ func NewIndex(
 
 // since called in Index's constructor there is no risk same shard will be inited/created in parallel,
 // therefore shardCreateLocks are not used here
+// initAndStoreShards初始化并存储本地分片
+// ctx: 上下文
+// class: 类模型
+// promMetrics: Prometheus指标
+// 返回值: 可能的错误
 func (i *Index) initAndStoreShards(ctx context.Context, class *models.Class,
 	promMetrics *monitoring.PrometheusMetrics,
 ) error {
+	// 分片信息结构体
 	type shardInfo struct {
-		name           string
-		activityStatus string
+		name           string  // 分片名称
+		activityStatus string  // 活动状态
 	}
 
-	var localShards []shardInfo
-	className := i.Config.ClassName.String()
+	var localShards []shardInfo  // 本地分片列表
+	className := i.Config.ClassName.String()  // 类名
 
+	// 读取分片状态并收集本地分片信息
 	err := i.schemaReader.Read(className, true, func(_ *models.Class, state *sharding.State) error {
 		if state == nil {
 			return fmt.Errorf("unable to retrieve sharding state for class %s", className)
@@ -459,37 +471,44 @@ func (i *Index) initAndStoreShards(ctx context.Context, class *models.Class,
 
 		return nil
 	})
+	// 检查分片状态读取是否成功
 	if err != nil {
 		return fmt.Errorf("failed to read sharding state: %w", err)
 	}
 
+	// 如果禁用了懒加载分片，则立即加载所有活跃的本地分片
 	if i.Config.DisableLazyLoadShards {
-		eg := enterrors.NewErrorGroupWrapper(i.logger)
-		eg.SetLimit(_NUMCPU)
+		eg := enterrors.NewErrorGroupWrapper(i.logger)  // 创建错误组
+		eg.SetLimit(_NUMCPU)  // 设置并发限制
 
+		// 遍历本地分片，只加载活跃状态的分片
 		for _, shard := range localShards {
 			if shard.activityStatus != models.TenantActivityStatusHOT {
-				continue
+				continue  // 跳过非活跃分片
 			}
 
 			shardName := shard.name
 			eg.Go(func() error {
+				// 获取分片加载许可
 				if err := i.shardLoadLimiter.Acquire(ctx); err != nil {
 					return fmt.Errorf("acquiring permit to load shard: %w", err)
 				}
-				defer i.shardLoadLimiter.Release()
+				defer i.shardLoadLimiter.Release()  // 确保释放许可
 
+				// 创建新的分片实例
 				newShard, err := NewShard(ctx, promMetrics, shardName, i, class, i.centralJobQueue, i.scheduler,
 					i.indexCheckpoints, i.shardReindexer, false, i.bitmapBufPool)
 				if err != nil {
 					return fmt.Errorf("init shard %s of index %s: %w", shardName, i.ID(), err)
 				}
 
+				// 存储分片到索引中
 				i.shards.Store(shardName, newShard)
 				return nil
 			}, shardName)
 		}
 
+		// 等待所有分片初始化完成
 		if err := eg.Wait(); err != nil {
 			return err
 		}
@@ -1190,76 +1209,98 @@ func parseAsStringToTime(in interface{}) (time.Time, error) {
 
 // return value []error gives the error for the index with the positions
 // matching the inputs
+// putObjectBatch批量插入对象到索引中，支持分片路由和复制机制
+// ctx: 上下文对象
+// objects: 待插入的对象数组
+// replProps: 复制属性配置
+// schemaVersion: 模式版本号
+// 返回值: 每个对象对应的错误数组，与输入对象数组一一对应
 func (i *Index) putObjectBatch(ctx context.Context, objects []*storobj.Object,
 	replProps *additional.ReplicationProperties, schemaVersion uint64,
 ) []error {
+	// objsAndPos结构体用于存储分片中的对象及其原始位置
 	type objsAndPos struct {
-		objects []*storobj.Object
-		pos     []int
+		objects []*storobj.Object  // 对象数组
+		pos     []int              // 对应的原始位置索引
 	}
-	out := make([]error, len(objects))
+	out := make([]error, len(objects))  // 初始化错误数组，与对象数组长度相同
+	// 如果复制属性为空，则使用默认一致性级别
 	if replProps == nil {
 		replProps = defaultConsistency()
 	}
 
+	// 按分片对对象进行分组
 	byShard := map[string]objsAndPos{}
 	for pos, obj := range objects {
+		// 解析对象应该存储的分片
 		target, err := i.shardResolver.ResolveShard(ctx, obj)
 		if err != nil {
-			out[pos] = err
+			out[pos] = err  // 记录解析错误
 			continue
 		}
+		// 将对象添加到对应分片的组中
 		group := byShard[target.Shard]
 		group.objects = append(group.objects, obj)
 		group.pos = append(group.pos, pos)
 		byShard[target.Shard] = group
 	}
 
+	// 使用等待组并发处理各个分片
 	wg := &sync.WaitGroup{}
 	for shardName, group := range byShard {
-		shardName := shardName
-		group := group
-		wg.Add(1)
+		shardName := shardName  // 避免闭包变量捕获问题
+		group := group          // 避免闭包变量捕获问题
+		wg.Add(1)  // 增加等待组计数
+		// 定义处理函数
 		f := func() {
-			defer wg.Done()
+			defer wg.Done()  // 确保等待组计数减少
 
+			// 恐慌恢复机制
 			defer func() {
 				err := recover()
 				if err != nil {
+					// 将恐慌错误传播到所有相关位置
 					for pos := range group.pos {
 						out[pos] = fmt.Errorf("an unexpected error occurred: %s", err)
 					}
 					fmt.Fprintf(os.Stderr, "panic: %s\n", err)
-					entsentry.Recover(err)
-					debug.PrintStack()
+					entsentry.Recover(err)  // Sentry错误追踪
+					debug.PrintStack()      // 打印堆栈跟踪
 				}
 			}()
-			// All objects in the same shard group have the same tenant since in multi-tenant
-			// systems all objects belonging to a tenant end up in the same shard.
-			// For non-multi-tenant collections, Object.Tenant is empty for all objects.
-			// Therefore, we can safely use the tenant from any object in the group.
+			// 同一分片组中的所有对象都属于同一个租户，因为在多租户系统中
+			// 属于同一租户的所有对象都会存储在同一分片中。
+			// 对于非多租户集合，所有对象的Object.Tenant都为空。
+			// 因此，我们可以安全地使用组中任意对象的租户信息。
 			tenantName := group.objects[0].Object.Tenant
-			var errs []error
+			var errs []error  // 存储操作错误
+			// 判断是否需要多副本写入
 			if i.shardHasMultipleReplicasWrite(tenantName, shardName) {
+				// 多副本写入：通过复制器进行分布式写入
 				errs = i.replicator.PutObjects(ctx, shardName, group.objects,
 					routerTypes.ConsistencyLevel(replProps.ConsistencyLevel), schemaVersion)
 			} else {
+				// 单副本写入：直接在本地或远程分片上操作
 				shard, release, err := i.getShardForDirectLocalOperation(ctx, tenantName, shardName, localShardOperationWrite)
-				defer release()
+				defer release()  // 确保资源释放
 				if err != nil {
-					errs = []error{err}
+					errs = []error{err}  // 返回获取分片错误
 				} else if shard != nil {
+					// 本地分片操作
 					func() {
+						// 获取备份读锁防止在备份过程中写入
 						i.backupLock.RLock(shardName)
 						defer i.backupLock.RUnlock(shardName)
-						defer release()
-						errs = shard.PutObjectBatch(ctx, group.objects)
+						defer release()  // 确保释放
+						errs = shard.PutObjectBatch(ctx, group.objects)  // 在分片上批量插入对象
 					}()
 				} else {
+					// 远程分片操作
 					errs = i.remote.BatchPutObjects(ctx, shardName, group.objects, schemaVersion)
 				}
 			}
 
+			// 将错误映射回原始对象数组的对应位置
 			for i, err := range errs {
 				desiredPos := group.pos[i]
 				out[desiredPos] = err
@@ -1268,9 +1309,9 @@ func (i *Index) putObjectBatch(ctx context.Context, objects []*storobj.Object,
 		enterrors.GoWrapper(f, i.logger)
 	}
 
-	wg.Wait()
+	wg.Wait()  // 等待所有分片操作完成
 
-	return out
+	return out  // 返回错误数组
 }
 
 func duplicateErr(in error, count int) []error {
@@ -1613,6 +1654,19 @@ func (i *Index) IncomingExists(ctx context.Context, shardName string,
 	return shard.Exists(ctx, id)
 }
 
+// objectSearch执行对象搜索，支持过滤、关键字排名、排序等多种查询条件
+// ctx: 上下文
+// limit: 返回结果的最大数量
+// filters: 本地过滤条件
+// keywordRanking: 关键字排名参数
+// sort: 排序条件
+// cursor: 游标参数
+// addlProps: 附加属性
+// replProps: 复制属性
+// tenant: 租户标识
+// autoCut: 自动截断参数
+// properties: 要返回的属性列表
+// 返回值: 对象列表、分数列表和可能的错误
 func (i *Index) objectSearch(ctx context.Context, limit int, filters *filters.LocalFilter,
 	keywordRanking *searchparams.KeywordRanking, sort []filters.Sort, cursor *filters.Cursor,
 	addlProps additional.Properties, replProps *additional.ReplicationProperties, tenant string, autoCut int,
@@ -1624,7 +1678,7 @@ func (i *Index) objectSearch(ctx context.Context, limit int, filters *filters.Lo
 		return nil, nil, err
 	}
 
-	// If the request is a BM25F with no properties selected, use all possible properties
+	// 如果请求是BM25F且未选择属性，则使用所有可能的属性
 	if keywordRanking != nil && keywordRanking.Type == "bm25" && len(keywordRanking.Properties) == 0 {
 
 		cl := i.getSchema.ReadOnlyClass(i.Config.ClassName.String())
@@ -1633,14 +1687,14 @@ func (i *Index) objectSearch(ctx context.Context, limit int, filters *filters.Lo
 		}
 
 		propHash := cl.Properties
-		// Get keys of hash
+		// 获取哈希的键
 		for _, v := range propHash {
 			if inverted.PropertyHasSearchableIndex(i.getSchema.ReadOnlyClass(i.Config.ClassName.String()), v.Name) {
 				keywordRanking.Properties = append(keywordRanking.Properties, v.Name)
 			}
 		}
 
-		// WEAVIATE-471 - error if we can't find a property to search
+		// WEAVIATE-471 - 如果找不到可搜索的属性则报错
 		if len(keywordRanking.Properties) == 0 {
 			return nil, []float32{}, errors.New(
 				"No properties provided, and no indexed properties found in class")
@@ -1977,6 +2031,21 @@ func (i *Index) remoteShardSearch(ctx context.Context, searchVectors []models.Ve
 	return outObjects, outScores, nil
 }
 
+// objectVectorSearch执行向量搜索，支持多种向量搜索参数和过滤条件
+// ctx: 上下文
+// searchVectors: 搜索向量数组
+// targetVectors: 目标向量名称数组
+// dist: 距离阈值
+// limit: 返回结果的最大数量
+// localFilters: 本地过滤条件
+// sort: 排序条件
+// groupBy: 分组参数
+// additionalProps: 附加属性
+// replProps: 复制属性
+// tenant: 租户标识
+// targetCombination: 目标组合策略
+// properties: 要返回的属性列表
+// 返回值: 对象列表、距离分数列表和可能的错误
 func (i *Index) objectVectorSearch(ctx context.Context, searchVectors []models.Vector,
 	targetVectors []string, dist float32, limit int, localFilters *filters.LocalFilter, sort []filters.Sort,
 	groupBy *searchparams.GroupBy, additionalProps additional.Properties,
@@ -1988,33 +2057,37 @@ func (i *Index) objectVectorSearch(ctx context.Context, searchVectors []models.V
 		return nil, nil, err
 	}
 
+	// 如果只有一个分片且不需要强制全副本搜索，则直接在本地分片上搜索
 	if len(readPlan.Shards()) == 1 && !i.Config.ForceFullReplicasSearch {
 		shard, release, err := i.getShardForDirectLocalOperation(ctx, tenant, readPlan.Shards()[0], localShardOperationRead)
-		defer release()
+		defer release()  // 确保释放资源
 		if err != nil {
 			return nil, nil, err
 		}
 		if shard != nil {
+			// 在单个本地分片上执行向量搜索
 			return i.singleLocalShardObjectVectorSearch(ctx, searchVectors, targetVectors, dist, limit, localFilters,
 				sort, groupBy, additionalProps, shard, targetCombination, properties)
 		}
 	}
 
-	// a limit of -1 is used to signal a search by distance. if that is
-	// the case we have to adjust how we calculate the output capacity
+	// 限制值为-1表示按距离搜索。在这种情况下，我们需要调整输出容量的计算方式
 	var shardCap int
 	if limit < 0 {
+		// 按距离搜索时使用默认初始限制
 		shardCap = len(readPlan.Shards()) * hnsw.DefaultSearchByDistInitialLimit
 	} else {
+		// 按数量限制搜索
 		shardCap = len(readPlan.Shards()) * limit
 	}
 
+	// 创建错误组包装器用于并发处理
 	eg := enterrors.NewErrorGroupWrapper(i.logger, "tenant:", tenant)
-	// When running in fractional CPU environments, _NUMCPU will be 1
-	// Most cloud deployments of Weaviate are in HA clusters with rf=3
-	// Therefore, we should set the maximum amount of concurrency to at least 3
-	// so that single-tenant rf=3 queries are not serialized. For any higher value of
-	// _NUMCPU, e.g. 8, the extra goroutine will not be a significant overhead (16 -> 17)
+	// 在分数CPU环境中运行时，_NUMCPU为1
+	// Weaviate的大多数云部署都在rf=3的HA集群中
+	// 因此，我们应该将最大并发数至少设置为3
+	// 这样单租户rf=3查询就不会被序列化。对于任何更高的_NUMCPU值，
+	// 例如8，额外的goroutine不会产生显著开销（16 -> 17）
 	eg.SetLimit(_NUMCPU*2 + 1)
 	m := &sync.Mutex{}
 
@@ -2749,6 +2822,12 @@ func (i *Index) aggregate(ctx context.Context, replProps *additional.Replication
 	return aggregator.NewShardCombiner().Do(results), nil
 }
 
+// IncomingAggregate处理来自其他节点的聚合请求
+// ctx: 上下文
+// shardName: 分片名称
+// params: 聚合参数
+// mods: 模块提供者接口
+// 返回值: 聚合结果和可能的错误
 func (i *Index) IncomingAggregate(ctx context.Context, shardName string,
 	params aggregation.Params, mods interface{},
 ) (*aggregation.Result, error) {
@@ -2762,9 +2841,12 @@ func (i *Index) IncomingAggregate(ctx context.Context, shardName string,
 		return nil, enterrors.NewErrUnprocessable(fmt.Errorf("local %s shard is not ready", shardName))
 	}
 
+	// 在分片上执行聚合操作
 	return shard.Aggregate(ctx, params, mods.(*modules.Provider))
 }
 
+// drop删除整个索引及其所有分片
+// 返回值: 可能的错误
 func (i *Index) drop() error {
 	i.closeLock.Lock()
 	defer i.closeLock.Unlock()
@@ -2777,25 +2859,30 @@ func (i *Index) drop() error {
 
 	i.closingCancel()
 
-	// Check if a backup is in progress. Dont delete files in this case so the backup process can complete successfully
-	// The files will be deleted after the backup is completed and in case of a crash on next startup.
+	// 检查是否有备份正在进行。在这种情况下不要删除文件，以便备份过程可以成功完成
+	// 文件将在备份完成后删除，或者在下次启动时发生崩溃的情况下删除。
 	lastBackup := i.lastBackup.Load()
-	keepFiles := lastBackup != nil
+	keepFiles := lastBackup != nil  // 如果有备份则保留文件
 
+	// 创建错误组用于并发删除分片
 	eg := enterrors.NewErrorGroupWrapper(i.logger)
-	eg.SetLimit(_NUMCPU * 2)
-	fields := logrus.Fields{"action": "drop_shard", "class": i.Config.ClassName}
+	eg.SetLimit(_NUMCPU * 2)  // 设置并发限制
+	fields := logrus.Fields{"action": "drop_shard", "class": i.Config.ClassName}  // 日志字段
+	// 定义删除分片的函数
 	dropShard := func(shardName string, _ ShardLike) error {
 		eg.Go(func() error {
+			// 获取备份读锁以防止在备份过程中删除
 			i.backupLock.RLock(shardName)
 			defer i.backupLock.RUnlock(shardName)
 
+			// 获取分片创建写锁以防止并发修改
 			i.shardCreateLocks.Lock(shardName)
 			defer i.shardCreateLocks.Unlock(shardName)
 
+			// 加载并删除分片
 			shard, ok := i.shards.LoadAndDelete(shardName)
 			if !ok {
-				return nil // shard already does not exist
+				return nil // 分片已不存在
 			}
 			if err := shard.drop(keepFiles); err != nil {
 				logrus.WithFields(fields).WithField("id", shard.ID()).Error(err)
