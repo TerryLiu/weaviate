@@ -6,7 +6,7 @@ func (db *DB) BatchPutObjects(ctx context.Context, objs objects.BatchObjects,
 	repl *additional.ReplicationProperties, schemaVersion uint64,
 ) (objects.BatchObjects, error)
 
-
+ 
 type BatchVectorRepo interface {
 	VectorRepo
 	batchRepoNew
