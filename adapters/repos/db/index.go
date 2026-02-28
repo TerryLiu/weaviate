@@ -198,13 +198,18 @@ func (m *shardMap) Swap(name string, shard ShardLike) (previous ShardLike, loade
 	return v.(ShardLike), ok
 }
 
-// CompareAndSwap swaps the old and new values for key if the value stored in the map is equal to old.
+// CompareAndSwap比较并交换分片，如果map中存储的值等于old，则将其交换为new
+// name: 分片名称
+// old: 旧的分片值
+// new: 新的分片值
+// 返回值: 如果交换成功返回true，否则返回false
 func (m *shardMap) CompareAndSwap(name string, old, new ShardLike) bool {
 	return (*sync.Map)(m).CompareAndSwap(name, old, new)
 }
 
-// LoadAndDelete deletes the value for a key, returning the previous value if any.
-// The loaded result reports whether the key was present.
+// LoadAndDelete删除键对应的分片值，如果存在则返回之前的值
+// name: 分片名称
+// 返回值: 之前的分片值和是否存在的标志
 func (m *shardMap) LoadAndDelete(name string) (ShardLike, bool) {
 	v, ok := (*sync.Map)(m).LoadAndDelete(name)
 	if v == nil || !ok {
@@ -216,7 +221,8 @@ func (m *shardMap) LoadAndDelete(name string) (ShardLike, bool) {
 // Index is the logical unit which contains all the data for one particular
 // class. An index can be further broken up into self-contained units, called
 // Shards, to allow for easy distribution across Nodes
-// Index表示一个索引，包含多个分片和相关的配置信息
+// Index表示一个索引，是包含特定类的所有数据的逻辑单元。
+// 一个索引可以进一步分解为独立的单元（称为分片），以便在节点间轻松分布
 type Index struct {
 	classSearcher           inverted.ClassSearcher // 允许嵌套的按引用搜索
 	shards                  shardMap               // 分片映射
@@ -904,10 +910,20 @@ type IndexConfig struct {
 	HFreshEnabled bool
 }
 
+// indexID生成索引的唯一标识符
+// class: 类名
+// 返回值: 小写的类名作为索引ID
 func indexID(class schema.ClassName) string {
 	return strings.ToLower(string(class))
 }
 
+// putObject向索引中插入单个对象
+// ctx: 上下文
+// object: 待插入的对象
+// replProps: 复制属性配置
+// tenantName: 租户名称
+// schemaVersion: 模式版本号
+// 返回值: 可能的错误
 func (i *Index) putObject(ctx context.Context, object *storobj.Object,
 	replProps *additional.ReplicationProperties, tenantName string, schemaVersion uint64,
 ) error {
@@ -964,6 +980,12 @@ func (i *Index) putObject(ctx context.Context, object *storobj.Object,
 	return nil
 }
 
+// IncomingPutObject处理来自其他节点的对象插入请求
+// ctx: 上下文
+// shardName: 分片名称
+// object: 待插入的对象
+// schemaVersion: 模式版本号
+// 返回值: 可能的错误
 func (i *Index) IncomingPutObject(ctx context.Context, shardName string,
 	object *storobj.Object, schemaVersion uint64,
 ) error {
@@ -990,6 +1012,8 @@ func (i *Index) IncomingPutObject(ctx context.Context, shardName string,
 	return shard.PutObject(ctx, object)
 }
 
+// replicationEnabled检查是否启用了复制功能
+// 返回值: 如果复制因子大于1则返回true
 func (i *Index) replicationEnabled() bool {
 	i.replicationConfigLock.RLock()
 	defer i.replicationConfigLock.RUnlock()
@@ -997,6 +1021,10 @@ func (i *Index) replicationEnabled() bool {
 	return i.Config.ReplicationFactor > 1
 }
 
+// shardHasMultipleReplicasWrite检查分片是否有多个副本用于写入
+// tenantName: 租户名称
+// shardName: 分片名称
+// 返回值: 如果有多个写副本则返回true
 func (i *Index) shardHasMultipleReplicasWrite(tenantName, shardName string) bool {
 	// if replication is enabled, we always have multiple replicas
 	if i.replicationEnabled() {
@@ -1016,6 +1044,10 @@ func (i *Index) shardHasMultipleReplicasWrite(tenantName, shardName string) bool
 	return len(allReplicas) > 1
 }
 
+// shardHasMultipleReplicasRead检查分片是否有多个副本用于读取
+// tenantName: 租户名称
+// shardName: 分片名称
+// 返回值: 如果有多个读副本则返回true
 func (i *Index) shardHasMultipleReplicasRead(tenantName, shardName string) bool {
 	// if replication is enabled, we always have multiple replicas
 	if i.replicationEnabled() {
@@ -1032,7 +1064,10 @@ func (i *Index) shardHasMultipleReplicasRead(tenantName, shardName string) bool 
 	return len(replicas.NodeNames()) > 1
 }
 
-// anyShardHasMultipleReplicasRead returns true if any of the shards has multiple replicas
+// anyShardHasMultipleReplicasRead返回是否任何分片有多个读副本
+// tenantName: 租户名称
+// shardNames: 分片名称数组
+// 返回值: 如果任何分片有多个读副本则返回true
 func (i *Index) anyShardHasMultipleReplicasRead(tenantName string, shardNames []string) bool {
 	if i.replicationEnabled() {
 		return true
@@ -1052,10 +1087,15 @@ const (
 	localShardOperationRead  localShardOperation = "read"
 )
 
-// getShardForDirectLocalOperation is used to try to get a shard for a local read/write operation.
-// It will return the shard if it is found, and a release function to release the shard.
-// The shard will be nil if the shard is not found, or if the local shard should not be used.
-// The caller should always call the release function.
+// getShardForDirectLocalOperation尝试获取用于本地读写操作的分片
+// 它将返回找到的分片以及用于释放分片的函数。
+// 如果未找到分片或不应使用本地分片，则分片为nil。
+// 调用方应始终调用release函数。
+// ctx: 上下文
+// tenantName: 租户名称
+// shardName: 分片名称
+// operation: 操作类型（读或写）
+// 返回值: 分片对象、释放函数和可能的错误
 func (i *Index) getShardForDirectLocalOperation(ctx context.Context, tenantName string, shardName string, operation localShardOperation) (ShardLike, func(), error) {
 	shard, release, err := i.GetShard(ctx, shardName)
 	// NOTE release should always be ok to call, even if there is an error or the shard is nil,
@@ -1100,6 +1140,8 @@ func (i *Index) getShardForDirectLocalOperation(ctx context.Context, tenantName 
 	return shard, release, nil
 }
 
+// AsyncReplicationEnabled返回异步复制是否已启用
+// 返回值: 如果异步复制已启用则返回true
 func (i *Index) AsyncReplicationEnabled() bool {
 	i.replicationConfigLock.RLock()
 	defer i.replicationConfigLock.RUnlock()
@@ -1107,10 +1149,14 @@ func (i *Index) AsyncReplicationEnabled() bool {
 	return i.asyncReplicationEnabled()
 }
 
+// asyncReplicationEnabled检查异步复制是否启用的内部方法
+// 返回值: 如果复制因子大于1且异步复制启用且未全局禁用则返回true
 func (i *Index) asyncReplicationEnabled() bool {
 	return i.Config.ReplicationFactor > 1 && i.Config.AsyncReplicationEnabled && !i.asyncReplicationGloballyDisabled()
 }
 
+// AsyncReplicationConfig返回异步复制配置
+// 返回值: 异步复制配置对象
 func (i *Index) AsyncReplicationConfig() AsyncReplicationConfig {
 	i.replicationConfigLock.RLock()
 	defer i.replicationConfigLock.RUnlock()
@@ -1118,17 +1164,22 @@ func (i *Index) AsyncReplicationConfig() AsyncReplicationConfig {
 	return i.Config.AsyncReplicationConfig
 }
 
+// asyncReplicationWorkerAcquire获取异步复制工作者资源
+// ctx: 上下文
+// 返回值: 可能的错误
 func (i *Index) asyncReplicationWorkerAcquire(ctx context.Context) error {
 	return i.asyncReplicationWorkersLimiter.Acquire(ctx, 1)
 }
 
+// asyncReplicationWorkerRelease释放异步复制工作者资源
 func (i *Index) asyncReplicationWorkerRelease() {
 	i.asyncReplicationWorkersLimiter.Release(1)
 }
 
-// parseDateFieldsInProps checks the schema for the current class for which
-// fields are date fields, then - if they are set - parses them accordingly.
-// Works for both date and date[].
+// parseDateFieldsInProps检查当前类的schema以确定哪些字段是日期字段，
+// 然后解析这些字段（如果已设置）。支持date和date[]两种类型。
+// props: 属性对象
+// 返回值: 可能的错误
 func (i *Index) parseDateFieldsInProps(props interface{}) error {
 	if props == nil {
 		return nil
@@ -1190,6 +1241,9 @@ func (i *Index) parseDateFieldsInProps(props interface{}) error {
 	return nil
 }
 
+// parseAsStringToTime将字符串解析为时间对象
+// in: 输入接口
+// 返回值: 解析后的时间对象和可能的错误
 func parseAsStringToTime(in interface{}) (time.Time, error) {
 	var parsed time.Time
 	var err error
@@ -1314,6 +1368,12 @@ func (i *Index) putObjectBatch(ctx context.Context, objects []*storobj.Object,
 	return out  // 返回错误数组
 }
 
+// return value []error gives the error for the index with the positions
+// matching the inputs
+// duplicateErr复制错误到指定数量的错误数组
+// in: 输入错误
+// count: 数组长度
+// 返回值: 错误数组
 func duplicateErr(in error, count int) []error {
 	out := make([]error, count)
 	for i := range out {
@@ -1323,6 +1383,12 @@ func duplicateErr(in error, count int) []error {
 	return out
 }
 
+// IncomingBatchPutObjects处理来自其他节点的批量对象插入请求
+// ctx: 上下文
+// shardName: 分片名称
+// objects: 对象数组
+// schemaVersion: 模式版本号
+// 返回值: 每个对象对应的错误数组
 func (i *Index) IncomingBatchPutObjects(ctx context.Context, shardName string,
 	objects []*storobj.Object, schemaVersion uint64,
 ) []error {
@@ -1352,6 +1418,12 @@ func (i *Index) IncomingBatchPutObjects(ctx context.Context, shardName string,
 }
 
 // return value map[int]error gives the error for the index as it received it
+// AddReferencesBatch批量添加引用到索引中
+// ctx: 上下文
+// refs: 批量引用数组
+// replProps: 复制属性配置
+// schemaVersion: 模式版本号
+// 返回值: 每个引用对应的错误数组
 func (i *Index) AddReferencesBatch(ctx context.Context, refs objects.BatchReferences,
 	replProps *additional.ReplicationProperties, schemaVersion uint64,
 ) []error {
@@ -1413,6 +1485,12 @@ func (i *Index) AddReferencesBatch(ctx context.Context, refs objects.BatchRefere
 	return out
 }
 
+// IncomingBatchAddReferences处理来自其他节点的批量添加引用请求
+// ctx: 上下文
+// shardName: 分片名称
+// refs: 批量引用数组
+// schemaVersion: 模式版本号
+// 返回值: 每个引用对应的错误数组
 func (i *Index) IncomingBatchAddReferences(ctx context.Context, shardName string,
 	refs objects.BatchReferences, schemaVersion uint64,
 ) []error {
@@ -1428,6 +1506,14 @@ func (i *Index) IncomingBatchAddReferences(ctx context.Context, shardName string
 	return shard.AddReferencesBatch(ctx, refs)
 }
 
+// objectByID根据ID获取单个对象
+// ctx: 上下文
+// id: 对象UUID
+// props: 要选择的属性
+// addl: 附加属性
+// replProps: 复制属性配置
+// tenant: 租户名称
+// 返回值: 对象指针和可能的错误
 func (i *Index) objectByID(ctx context.Context, id strfmt.UUID,
 	props search.SelectProperties, addl additional.Properties,
 	replProps *additional.ReplicationProperties, tenant string,
@@ -1478,6 +1564,13 @@ func (i *Index) objectByID(ctx context.Context, id strfmt.UUID,
 	return obj, nil
 }
 
+// IncomingGetObject处理来自其他节点的获取对象请求
+// ctx: 上下文
+// shardName: 分片名称
+// id: 对象UUID
+// props: 要选择的属性
+// additional: 附加属性
+// 返回值: 对象指针和可能的错误
 func (i *Index) IncomingGetObject(ctx context.Context, shardName string,
 	id strfmt.UUID, props search.SelectProperties,
 	additional additional.Properties,
@@ -1495,6 +1588,11 @@ func (i *Index) IncomingGetObject(ctx context.Context, shardName string,
 	return shard.ObjectByID(ctx, id, props, additional)
 }
 
+// IncomingMultiGetObjects处理来自其他节点的批量获取对象请求
+// ctx: 上下文
+// shardName: 分片名称
+// ids: 对象UUID数组
+// 返回值: 对象数组和可能的错误
 func (i *Index) IncomingMultiGetObjects(ctx context.Context, shardName string,
 	ids []strfmt.UUID,
 ) ([]*storobj.Object, error) {
@@ -1511,6 +1609,11 @@ func (i *Index) IncomingMultiGetObjects(ctx context.Context, shardName string,
 	return shard.MultiObjectByID(ctx, wrapIDsInMulti(ids))
 }
 
+// multiObjectByID批量获取多个对象
+// ctx: 上下文
+// query: 标识符数组
+// tenant: 租户名称
+// 返回值: 对象数组和可能的错误
 func (i *Index) multiObjectByID(ctx context.Context,
 	query []multi.Identifier, tenant string,
 ) ([]*storobj.Object, error) {
@@ -1572,6 +1675,9 @@ func (i *Index) multiObjectByID(ctx context.Context,
 	return out, nil
 }
 
+// extractIDsFromMulti从多标识符数组中提取UUID数组
+// in: 多标识符数组
+// 返回值: UUID数组
 func extractIDsFromMulti(in []multi.Identifier) []strfmt.UUID {
 	out := make([]strfmt.UUID, len(in))
 
@@ -1582,6 +1688,9 @@ func extractIDsFromMulti(in []multi.Identifier) []strfmt.UUID {
 	return out
 }
 
+// wrapIDsInMulti将UUID数组包装为多标识符数组
+// in: UUID数组
+// 返回值: 多标识符数组
 func wrapIDsInMulti(in []strfmt.UUID) []multi.Identifier {
 	out := make([]multi.Identifier, len(in))
 
@@ -1592,6 +1701,12 @@ func wrapIDsInMulti(in []strfmt.UUID) []multi.Identifier {
 	return out
 }
 
+// exists检查对象是否存在
+// ctx: 上下文
+// id: 对象UUID
+// replProps: 复制属性配置
+// tenant: 租户名称
+// 返回值: 是否存在和可能的错误
 func (i *Index) exists(ctx context.Context, id strfmt.UUID,
 	replProps *additional.ReplicationProperties, tenant string,
 ) (bool, error) {
@@ -1638,6 +1753,11 @@ func (i *Index) exists(ctx context.Context, id strfmt.UUID,
 	return exists, err
 }
 
+// IncomingExists处理来自其他节点的对象存在性检查请求
+// ctx: 上下文
+// shardName: 分片名称
+// id: 对象UUID
+// 返回值: 是否存在和可能的错误
 func (i *Index) IncomingExists(ctx context.Context, shardName string,
 	id strfmt.UUID,
 ) (bool, error) {
@@ -1782,6 +1902,18 @@ func (i *Index) objectSearch(ctx context.Context, limit int, filters *filters.Lo
 	return outObjects, outScores, nil
 }
 
+// objectSearchByShard按分片执行对象搜索
+// ctx: 上下文
+// limit: 结果数量限制
+// filters: 过滤条件
+// keywordRanking: 关键字排名
+// sort: 排序条件
+// cursor: 游标
+// addlProps: 附加属性
+// tenant: 租户名称
+// readPlan: 读取路由计划
+// properties: 属性列表
+// 返回值: 对象数组、分数数组和可能的错误
 func (i *Index) objectSearchByShard(ctx context.Context, limit int, filters *filters.LocalFilter,
 	keywordRanking *searchparams.KeywordRanking, sort []filters.Sort, cursor *filters.Cursor,
 	addlProps additional.Properties, tenant string, readPlan routerTypes.ReadRoutingPlan, properties []string,
@@ -1911,17 +2043,31 @@ func (i *Index) objectSearchByShard(ctx context.Context, limit int, filters *fil
 	return resultObjects, resultScores, nil
 }
 
+// sortByID按对象ID排序
+// objects: 对象数组
+// scores: 分数数组
+// 返回值: 排序后的对象数组和分数数组
 func (i *Index) sortByID(objects []*storobj.Object, scores []float32,
 ) ([]*storobj.Object, []float32) {
 	return newIDSorter().sort(objects, scores)
 }
 
+// sortKeywordRanking按关键字排名分数排序
+// objects: 对象数组
+// scores: 分数数组
+// 返回值: 排序后的对象数组和分数数组
 func (i *Index) sortKeywordRanking(objects []*storobj.Object,
 	scores []float32,
 ) ([]*storobj.Object, []float32) {
 	return newScoresSorter().sort(objects, scores)
 }
 
+// sort对对象进行排序
+// objects: 对象数组
+// scores: 分数数组
+// sort: 排序条件
+// limit: 结果数量限制
+// 返回值: 排序后的对象数组、分数数组和可能的错误
 func (i *Index) sort(objects []*storobj.Object, scores []float32,
 	sort []filters.Sort, limit int,
 ) ([]*storobj.Object, []float32, error) {
@@ -1929,12 +2075,33 @@ func (i *Index) sort(objects []*storobj.Object, scores []float32,
 		Sort(objects, scores, limit, sort)
 }
 
+// mergeGroups合并分组结果
+// objects: 对象数组
+// dists: 距离数组
+// groupBy: 分组参数
+// limit: 结果数量限制
+// shardCount: 分片数量
+// 返回值: 合并后的对象数组、距离数组和可能的错误
 func (i *Index) mergeGroups(objects []*storobj.Object, dists []float32,
 	groupBy *searchparams.GroupBy, limit, shardCount int,
 ) ([]*storobj.Object, []float32, error) {
 	return newGroupMerger(objects, dists, groupBy).Do()
 }
 
+// singleLocalShardObjectVectorSearch在单个本地分片上执行向量搜索
+// ctx: 上下文
+// searchVectors: 搜索向量数组
+// targetVectors: 目标向量名称数组
+// dist: 距离阈值
+// limit: 结果数量限制
+// filters: 过滤条件
+// sort: 排序条件
+// groupBy: 分组参数
+// additional: 附加属性
+// shard: 分片对象
+// targetCombination: 目标组合策略
+// properties: 属性列表
+// 返回值: 对象数组、距离数组和可能的错误
 func (i *Index) singleLocalShardObjectVectorSearch(ctx context.Context, searchVectors []models.Vector,
 	targetVectors []string, dist float32, limit int, filters *filters.LocalFilter,
 	sort []filters.Sort, groupBy *searchparams.GroupBy, additional additional.Properties,
@@ -1953,6 +2120,21 @@ func (i *Index) singleLocalShardObjectVectorSearch(ctx context.Context, searchVe
 	return res, resDists, nil
 }
 
+// localShardSearch在本地分片上执行搜索
+// ctx: 上下文
+// searchVectors: 搜索向量数组
+// targetVectors: 目标向量名称数组
+// dist: 距离阈值
+// limit: 结果数量限制
+// localFilters: 本地过滤条件
+// sort: 排序条件
+// groupBy: 分组参数
+// additionalProps: 附加属性
+// targetCombination: 目标组合策略
+// properties: 属性列表
+// tenantName: 租户名称
+// shardName: 分片名称
+// 返回值: 对象数组、距离数组和可能的错误
 func (i *Index) localShardSearch(ctx context.Context, searchVectors []models.Vector,
 	targetVectors []string, dist float32, limit int, localFilters *filters.LocalFilter,
 	sort []filters.Sort, groupBy *searchparams.GroupBy, additionalProps additional.Properties,
@@ -1980,6 +2162,21 @@ func (i *Index) localShardSearch(ctx context.Context, searchVectors []models.Vec
 	return localShardResult, localShardScores, nil
 }
 
+// remoteShardSearch在远程分片上执行搜索
+// ctx: 上下文
+// searchVectors: 搜索向量数组
+// targetVectors: 目标向量名称数组
+// distance: 距离阈值
+// limit: 结果数量限制
+// localFilters: 本地过滤条件
+// sort: 排序条件
+// groupBy: 分组参数
+// additional: 附加属性
+// targetCombination: 目标组合策略
+// properties: 属性列表
+// tenantName: 租户名称
+// shardName: 分片名称
+// 返回值: 对象数组、距离数组和可能的错误
 func (i *Index) remoteShardSearch(ctx context.Context, searchVectors []models.Vector,
 	targetVectors []string, distance float32, limit int, localFilters *filters.LocalFilter,
 	sort []filters.Sort, groupBy *searchparams.GroupBy, additional additional.Properties,
@@ -2206,6 +2403,22 @@ func (i *Index) objectVectorSearch(ctx context.Context, searchVectors []models.V
 	return out, dists, nil
 }
 
+// IncomingSearch处理来自其他节点的搜索请求
+// ctx: 上下文
+// shardName: 分片名称
+// searchVectors: 搜索向量数组
+// targetVectors: 目标向量名称数组
+// distance: 距离阈值
+// limit: 结果数量限制
+// filters: 过滤条件
+// keywordRanking: 关键字排名
+// sort: 排序条件
+// cursor: 游标
+// groupBy: 分组参数
+// additional: 附加属性
+// targetCombination: 目标组合策略
+// properties: 属性列表
+// 返回值: 对象数组、距离数组和可能的错误
 func (i *Index) IncomingSearch(ctx context.Context, shardName string,
 	searchVectors []models.Vector, targetVectors []string, distance float32, limit int,
 	filters *filters.LocalFilter, keywordRanking *searchparams.KeywordRanking,
@@ -2255,6 +2468,14 @@ func (i *Index) IncomingSearch(ctx context.Context, shardName string,
 	return res, resDists, nil
 }
 
+// deleteObject删除单个对象
+// ctx: 上下文
+// id: 对象UUID
+// deletionTime: 删除时间
+// replProps: 复制属性配置
+// tenant: 租户名称
+// schemaVersion: 模式版本号
+// 返回值: 可能的错误
 func (i *Index) deleteObject(ctx context.Context, id strfmt.UUID,
 	deletionTime time.Time, replProps *additional.ReplicationProperties, tenant string, schemaVersion uint64,
 ) error {
@@ -2304,6 +2525,13 @@ func (i *Index) deleteObject(ctx context.Context, id strfmt.UUID,
 	return nil
 }
 
+// IncomingDeleteObject处理来自其他节点的删除对象请求
+// ctx: 上下文
+// shardName: 分片名称
+// id: 对象UUID
+// deletionTime: 删除时间
+// schemaVersion: 模式版本号
+// 返回值: 可能的错误
 func (i *Index) IncomingDeleteObject(ctx context.Context, shardName string,
 	id strfmt.UUID, deletionTime time.Time, schemaVersion uint64,
 ) error {
@@ -2319,6 +2547,14 @@ func (i *Index) IncomingDeleteObject(ctx context.Context, shardName string,
 	return shard.DeleteObject(ctx, id, deletionTime)
 }
 
+// IncomingDeleteObjectsExpired处理来自其他节点的过期对象删除请求
+// eg: 错误组包装器
+// ec: 错误合成器
+// deleteOnPropName: 用于判断过期的属性名称
+// ttlThreshold: TTL阈值时间
+// deletionTime: 删除时间
+// countDeleted: 删除计数回调函数
+// schemaVersion: 模式版本号
 func (i *Index) IncomingDeleteObjectsExpired(eg *enterrors.ErrorGroupWrapper, ec errorcompounder.ErrorCompounder,
 	deleteOnPropName string, ttlThreshold, deletionTime time.Time, countDeleted func(int32), schemaVersion uint64,
 ) {
@@ -2326,6 +2562,15 @@ func (i *Index) IncomingDeleteObjectsExpired(eg *enterrors.ErrorGroupWrapper, ec
 	i.incomingDeleteObjectsExpired(i.closingCtx, eg, ec, deleteOnPropName, ttlThreshold, deletionTime, countDeleted, schemaVersion)
 }
 
+// incomingDeleteObjectsExpired删除过期对象的内部实现
+// ctx: 上下文
+// eg: 错误组包装器
+// ec: 错误合成器
+// deleteOnPropName: 用于判断过期的属性名称
+// ttlThreshold: TTL阈值时间
+// deletionTime: 删除时间
+// countDeleted: 删除计数回调函数
+// schemaVersion: 模式版本号
 func (i *Index) incomingDeleteObjectsExpired(ctx context.Context, eg *enterrors.ErrorGroupWrapper, ec errorcompounder.ErrorCompounder,
 	deleteOnPropName string, ttlThreshold, deletionTime time.Time, countDeleted func(int32), schemaVersion uint64,
 ) {
@@ -2494,6 +2739,16 @@ func (i *Index) incomingDeleteObjectsExpired(ctx context.Context, eg *enterrors.
 	})
 }
 
+// incomingDeleteObjectsExpiredUuids删除指定UUID的过期对象
+// ctx: 上下文
+// ec: 错误合成器
+// deletionTime: 删除时间
+// shard: 分片名称
+// tenant: 租户名称
+// uuids: 待删除的UUID数组
+// countDeleted: 删除计数回调函数
+// replProps: 复制属性配置
+// schemaVersion: 模式版本号
 func (i *Index) incomingDeleteObjectsExpiredUuids(ctx context.Context, ec errorcompounder.ErrorCompounder,
 	deletionTime time.Time, shard, tenant string, uuids []strfmt.UUID, countDeleted func(int32),
 	replProps *additional.ReplicationProperties, schemaVersion uint64,
@@ -2566,6 +2821,8 @@ func (i *Index) incomingDeleteObjectsExpiredUuids(ctx context.Context, ec errorc
 	ec.AddGroups(f(), collection, inputKey)
 }
 
+// getClass获取当前索引对应的类定义
+// 返回值: 类模型指针
 func (i *Index) getClass() *models.Class {
 	className := i.Config.ClassName.String()
 	return i.getSchema.ReadOnlyClass(className)
@@ -2575,16 +2832,35 @@ func (i *Index) getClass() *models.Class {
 // is expected to exist and be active
 // Method first tries to get shard from Index::shards map,
 // or inits shard and adds it to the map if shard was not found
+// initLocalShard初始化本地分片
+// 用于"接收者"节点，期望本地分片存在且处于活跃状态
+// 该方法首先尝试从Index::shards映射中获取分片，
+// 如果未找到分片，则初始化并添加到映射中
+// ctx: 上下文
+// shardName: 分片名称
+// 返回值: 可能的错误
 func (i *Index) initLocalShard(ctx context.Context, shardName string) error {
 	return i.initLocalShardWithForcedLoading(ctx, i.getClass(), shardName, false, false)
 }
 
+// LoadLocalShard加载本地分片
+// ctx: 上下文
+// shardName: 分片名称
+// implicitShardLoading: 是否隐式加载分片
+// 返回值: 可能的错误
 func (i *Index) LoadLocalShard(ctx context.Context, shardName string, implicitShardLoading bool) error {
 	// TODO: implicitShardLoading needs to be double checked if needed at all
 	// consalidate mustLoad and implicitShardLoading
 	return i.initLocalShardWithForcedLoading(ctx, i.getClass(), shardName, true, implicitShardLoading)
 }
 
+// initLocalShardWithForcedLoading强制加载方式初始化本地分片
+// ctx: 上下文
+// class: 类模型
+// shardName: 分片名称
+// mustLoad: 是否必须加载
+// implicitShardLoading: 是否隐式加载
+// 返回值: 可能的错误
 func (i *Index) initLocalShardWithForcedLoading(ctx context.Context, class *models.Class, shardName string, mustLoad bool, implicitShardLoading bool) error {
 	i.closeLock.RLock()
 	defer i.closeLock.RUnlock()
@@ -2621,6 +2897,10 @@ func (i *Index) initLocalShardWithForcedLoading(ctx context.Context, class *mode
 	return nil
 }
 
+// UnloadLocalShard卸载本地分片
+// ctx: 上下文
+// shardName: 分片名称
+// 返回值: 可能的错误
 func (i *Index) UnloadLocalShard(ctx context.Context, shardName string) error {
 	i.closeLock.RLock()
 	defer i.closeLock.RUnlock()
@@ -2647,22 +2927,34 @@ func (i *Index) UnloadLocalShard(ctx context.Context, shardName string) error {
 	return nil
 }
 
+// GetShard获取指定的分片（不会强制初始化）
+// ctx: 上下文
+// shardName: 分片名称
+// 返回值: 分片对象、释放函数和可能的错误
 func (i *Index) GetShard(ctx context.Context, shardName string) (
 	shard ShardLike, release func(), err error,
 ) {
 	return i.getOptInitLocalShard(ctx, shardName, false)
 }
 
+// getOrInitShard获取或初始化指定的分片
+// ctx: 上下文
+// shardName: 分片名称
+// 返回值: 分片对象、释放函数和可能的错误
 func (i *Index) getOrInitShard(ctx context.Context, shardName string) (
 	shard ShardLike, release func(), err error,
 ) {
 	return i.getOptInitLocalShard(ctx, shardName, true)
 }
 
-// getOptInitLocalShard returns the local shard with the given name.
-// It is ensured that the returned instance is a fully loaded shard if ensureInit is set to true.
-// The returned shard may be a lazy shard instance or nil if the shard hasn't yet been initialized.
-// The returned shard cannot be closed until release is called.
+// getOptInitLocalShard返回指定名称的本地分片
+// 如果ensureInit设置为true，则确保返回的实例是完全加载的分片
+// 如果分片尚未初始化，返回的分片可能是懒加载分片实例或nil
+// 在调用release之前，返回的分片不能被关闭
+// ctx: 上下文
+// shardName: 分片名称
+// ensureInit: 是否确保初始化
+// 返回值: 分片对象、释放函数和可能的错误
 func (i *Index) getOptInitLocalShard(ctx context.Context, shardName string, ensureInit bool) (
 	shard ShardLike, release func(), err error,
 ) {
@@ -2718,6 +3010,13 @@ func (i *Index) getOptInitLocalShard(ctx context.Context, shardName string, ensu
 	return shard, release, nil
 }
 
+// mergeObject合并更新对象
+// ctx: 上下文
+// merge: 合并文档
+// replProps: 复制属性配置
+// tenant: 租户名称
+// schemaVersion: 模式版本号
+// 返回值: 可能的错误
 func (i *Index) mergeObject(ctx context.Context, merge objects.MergeDocument,
 	replProps *additional.ReplicationProperties, tenant string, schemaVersion uint64,
 ) error {
@@ -2768,6 +3067,12 @@ func (i *Index) mergeObject(ctx context.Context, merge objects.MergeDocument,
 	return nil
 }
 
+// IncomingMergeObject处理来自其他节点的合并对象请求
+// ctx: 上下文
+// shardName: 分片名称
+// mergeDoc: 合并文档
+// schemaVersion: 模式版本号
+// 返回值: 可能的错误
 func (i *Index) IncomingMergeObject(ctx context.Context, shardName string,
 	mergeDoc objects.MergeDocument, schemaVersion uint64,
 ) error {
@@ -2783,6 +3088,13 @@ func (i *Index) IncomingMergeObject(ctx context.Context, shardName string,
 	return shard.MergeObject(ctx, mergeDoc)
 }
 
+// aggregate执行聚合操作
+// ctx: 上下文
+// replProps: 复制属性配置
+// params: 聚合参数
+// modules: 模块提供者
+// tenant: 租户名称
+// 返回值: 聚合结果和可能的错误
 func (i *Index) aggregate(ctx context.Context, replProps *additional.ReplicationProperties,
 	params aggregation.Params, modules *modules.Provider, tenant string,
 ) (*aggregation.Result, error) {
@@ -2918,6 +3230,9 @@ func (i *Index) drop() error {
 	}
 }
 
+// dropShards删除多个分片
+// names: 分片名称数组
+// 返回值: 可能的错误
 func (i *Index) dropShards(names []string) error {
 	i.closeLock.RLock()
 	defer i.closeLock.RUnlock()
@@ -2962,6 +3277,12 @@ func (i *Index) dropShards(names []string) error {
 	return ec.ToError()
 }
 
+// dropCloudShards删除云端分片
+// ctx: 上下文
+// cloud: 云端卸载接口
+// names: 分片名称数组
+// nodeId: 节点ID
+// 返回值: 可能的错误
 func (i *Index) dropCloudShards(ctx context.Context, cloud modulecapabilities.OffloadCloud, names []string, nodeId string) error {
 	i.closeLock.RLock()
 	defer i.closeLock.RUnlock()
@@ -2994,6 +3315,9 @@ func (i *Index) dropCloudShards(ctx context.Context, cloud modulecapabilities.Of
 	return ec.ToError()
 }
 
+// Shutdown关闭索引及其所有分片
+// ctx: 上下文
+// 返回值: 可能的错误
 func (i *Index) Shutdown(ctx context.Context) error {
 	i.closeLock.Lock()
 	defer i.closeLock.Unlock()
@@ -3028,6 +3352,10 @@ func (i *Index) Shutdown(ctx context.Context) error {
 	return nil
 }
 
+// stopCycleManagers停止所有周期管理器
+// ctx: 上下文
+// usecase: 用例描述（如"drop"或"shutdown"）
+// 返回值: 可能的错误
 func (i *Index) stopCycleManagers(ctx context.Context, usecase string) error {
 	if err := i.cycleCallbacks.compactionCycle.StopAndWait(ctx); err != nil {
 		return fmt.Errorf("%s: stop objects compaction cycle: %w", usecase, err)
@@ -3053,6 +3381,10 @@ func (i *Index) stopCycleManagers(ctx context.Context, usecase string) error {
 	return nil
 }
 
+// getShardsQueueSize获取分片队列大小
+// ctx: 上下文
+// tenant: 租户名称
+// 返回值: 分片名称到队列大小的映射和可能的错误
 func (i *Index) getShardsQueueSize(ctx context.Context, tenant string) (map[string]int64, error) {
 	className := i.Config.ClassName.String()
 	shardNames, err := i.schemaReader.Shards(className)
@@ -3096,6 +3428,10 @@ func (i *Index) getShardsQueueSize(ctx context.Context, tenant string) (map[stri
 	return shardsQueueSize, nil
 }
 
+// IncomingGetShardQueueSize处理来自其他节点的获取分片队列大小请求
+// ctx: 上下文
+// shardName: 分片名称
+// 返回值: 队列大小和可能的错误
 func (i *Index) IncomingGetShardQueueSize(ctx context.Context, shardName string) (int64, error) {
 	shard, release, err := i.getOrInitShard(ctx, shardName)
 	if err != nil {
@@ -3114,6 +3450,10 @@ func (i *Index) IncomingGetShardQueueSize(ctx context.Context, shardName string)
 	return size, nil
 }
 
+// getShardsStatus获取所有分片的状态
+// ctx: 上下文
+// tenant: 租户名称
+// 返回值: 分片名称到状态的映射和可能的错误
 func (i *Index) getShardsStatus(ctx context.Context, tenant string) (map[string]string, error) {
 	className := i.Config.ClassName.String()
 	shardNames, err := i.schemaReader.Shards(className)
@@ -3155,6 +3495,10 @@ func (i *Index) getShardsStatus(ctx context.Context, tenant string) (map[string]
 	return shardsStatus, nil
 }
 
+// IncomingGetShardStatus处理来自其他节点的获取分片状态请求
+// ctx: 上下文
+// shardName: 分片名称
+// 返回值: 分片状态字符串和可能的错误
 func (i *Index) IncomingGetShardStatus(ctx context.Context, shardName string) (string, error) {
 	shard, release, err := i.getOrInitShard(ctx, shardName)
 	if err != nil {
@@ -3168,6 +3512,13 @@ func (i *Index) IncomingGetShardStatus(ctx context.Context, shardName string) (s
 	return shard.GetStatus().String(), nil
 }
 
+// updateShardStatus更新分片状态
+// ctx: 上下文
+// tenantName: 租户名称
+// shardName: 分片名称
+// targetStatus: 目标状态
+// schemaVersion: 模式版本号
+// 返回值: 可能的错误
 func (i *Index) updateShardStatus(ctx context.Context, tenantName, shardName, targetStatus string, schemaVersion uint64) error {
 	shard, release, err := i.getShardForDirectLocalOperation(ctx, tenantName, shardName, localShardOperationWrite)
 	if err != nil {
@@ -3180,6 +3531,12 @@ func (i *Index) updateShardStatus(ctx context.Context, tenantName, shardName, ta
 	return shard.UpdateStatus(targetStatus, "manually set by user")
 }
 
+// IncomingUpdateShardStatus处理来自其他节点的更新分片状态请求
+// ctx: 上下文
+// shardName: 分片名称
+// targetStatus: 目标状态
+// schemaVersion: 模式版本号
+// 返回值: 可能的错误
 func (i *Index) IncomingUpdateShardStatus(ctx context.Context, shardName, targetStatus string, schemaVersion uint64) error {
 	shard, release, err := i.getOrInitShard(ctx, shardName)
 	if err != nil {
@@ -3190,6 +3547,13 @@ func (i *Index) IncomingUpdateShardStatus(ctx context.Context, shardName, target
 	return shard.UpdateStatus(targetStatus, "manually set by user")
 }
 
+// findUUIDs根据过滤条件查找UUID
+// ctx: 上下文
+// filters: 本地过滤条件
+// tenant: 租户名称
+// repl: 复制属性配置
+// perShardLimit: 每个分片的限制数量
+// 返回值: 分片名称到UUID数组的映射和可能的错误
 func (i *Index) findUUIDs(ctx context.Context,
 	filters *filters.LocalFilter, tenant string, repl *additional.ReplicationProperties,
 	perShardLimit int,
@@ -3239,6 +3603,13 @@ func (i *Index) findUUIDs(ctx context.Context,
 // If repl is nil and a default override is provided, the default override is returned.
 // If repl is nil and no default override is provided, the default consistency level
 // is returned (QUORUM).
+// consistencyLevel返回给定复制属性的一致性级别
+// 如果repl不为nil，则从repl返回一致性级别
+// 如果repl为nil且提供了默认覆盖，则返回默认覆盖
+// 如果repl为nil且未提供默认覆盖，则返回默认一致性级别（QUORUM）
+// repl: 复制属性配置
+// defaultOverride: 可选的默认一致性级别覆盖
+// 返回值: 一致性级别
 func (i *Index) consistencyLevel(
 	repl *additional.ReplicationProperties,
 	defaultOverride ...routerTypes.ConsistencyLevel,
@@ -3249,6 +3620,12 @@ func (i *Index) consistencyLevel(
 	return routerTypes.ConsistencyLevel(repl.ConsistencyLevel)
 }
 
+// IncomingFindUUIDs处理来自其他节点的查找UUID请求
+// ctx: 上下文
+// shardName: 分片名称
+// filters: 本地过滤条件
+// limit: 限制数量
+// 返回值: UUID数组和可能的错误
 func (i *Index) IncomingFindUUIDs(ctx context.Context, shardName string,
 	filters *filters.LocalFilter, limit int,
 ) ([]strfmt.UUID, error) {
@@ -3265,6 +3642,15 @@ func (i *Index) IncomingFindUUIDs(ctx context.Context, shardName string,
 	return shard.FindUUIDs(ctx, filters, limit)
 }
 
+// batchDeleteObjects批量删除对象
+// ctx: 上下文
+// shardUUIDs: 分片名称到UUID数组的映射
+// deletionTime: 删除时间
+// dryRun: 是否为模拟运行
+// replProps: 复制属性配置
+// schemaVersion: 模式版本号
+// tenant: 租户名称
+// 返回值: 批量简单对象和可能的错误
 func (i *Index) batchDeleteObjects(ctx context.Context, shardUUIDs map[string][]strfmt.UUID,
 	deletionTime time.Time, dryRun bool, replProps *additional.ReplicationProperties, schemaVersion uint64,
 	tenant string,
@@ -3328,6 +3714,14 @@ func (i *Index) batchDeleteObjects(ctx context.Context, shardUUIDs map[string][]
 	return out, nil
 }
 
+// IncomingDeleteObjectBatch处理来自其他节点的批量删除对象请求
+// ctx: 上下文
+// shardName: 分片名称
+// uuids: UUID数组
+// deletionTime: 删除时间
+// dryRun: 是否为模拟运行
+// schemaVersion: 模式版本号
+// 返回值: 批量简单对象
 func (i *Index) IncomingDeleteObjectBatch(ctx context.Context, shardName string,
 	uuids []strfmt.UUID, deletionTime time.Time, dryRun bool, schemaVersion uint64,
 ) objects.BatchSimpleObjects {
@@ -3345,6 +3739,9 @@ func (i *Index) IncomingDeleteObjectBatch(ctx context.Context, shardName string,
 	return shard.DeleteObjectBatch(ctx, uuids, deletionTime, dryRun)
 }
 
+// defaultConsistency创建默认一致性级别配置
+// defaultOverride: 可选的默认一致性级别覆盖
+// 返回值: 复制属性配置
 func defaultConsistency(defaultOverride ...routerTypes.ConsistencyLevel) *additional.ReplicationProperties {
 	rp := &additional.ReplicationProperties{}
 	if len(defaultOverride) != 0 {
@@ -3355,6 +3752,10 @@ func defaultConsistency(defaultOverride ...routerTypes.ConsistencyLevel) *additi
 	return rp
 }
 
+// objectSearchPreallocate为对象搜索预分配内存
+// limit: 结果数量限制
+// shards: 分片名称数组
+// 返回值: 预分配的对象数组和分数数组
 func objectSearchPreallocate(limit int, shards []string) ([]*storobj.Object, []float32) {
 	perShardLimit := config.DefaultQueryMaximumResults
 	if perShardLimit > int64(limit) {
@@ -3370,6 +3771,11 @@ func objectSearchPreallocate(limit int, shards []string) ([]*storobj.Object, []f
 // GetVectorIndexConfig returns a vector index configuration associated with targetVector.
 // In case targetVector is empty string, legacy vector configuration is returned.
 // Method expects that configuration associated with targetVector is present.
+// GetVectorIndexConfig返回与targetVector关联的向量索引配置
+// 如果targetVector为空字符串，则返回传统向量配置
+// 该方法期望与targetVector关联的配置存在
+// targetVector: 目标向量名称
+// 返回值: 向量索引配置
 func (i *Index) GetVectorIndexConfig(targetVector string) schemaConfig.VectorIndexConfig {
 	i.vectorIndexUserConfigLock.Lock()
 	defer i.vectorIndexUserConfigLock.Unlock()
@@ -3383,6 +3789,9 @@ func (i *Index) GetVectorIndexConfig(targetVector string) schemaConfig.VectorInd
 
 // GetVectorIndexConfigs returns a map of vector index configurations.
 // If present, legacy vector is return under the key of empty string.
+// GetVectorIndexConfigs返回向量索引配置的映射
+// 如果存在，传统向量在空字符串键下返回
+// 返回值: 向量名称到向量索引配置的映射
 func (i *Index) GetVectorIndexConfigs() map[string]schemaConfig.VectorIndexConfig {
 	i.vectorIndexUserConfigLock.Lock()
 	defer i.vectorIndexUserConfigLock.Unlock()
@@ -3399,6 +3808,9 @@ func (i *Index) GetVectorIndexConfigs() map[string]schemaConfig.VectorIndexConfi
 	return configs
 }
 
+// convertToVectorIndexConfig将接口转换为向量索引配置
+// config: 配置接口
+// 返回值: 向量索引配置或nil
 func convertToVectorIndexConfig(config interface{}) schemaConfig.VectorIndexConfig {
 	if config == nil {
 		return nil
@@ -3414,6 +3826,9 @@ func convertToVectorIndexConfig(config interface{}) schemaConfig.VectorIndexConf
 	return nil
 }
 
+// convertToVectorIndexConfigs将向量配置映射转换为向量索引配置映射
+// configs: 向量配置映射
+// 返回值: 向量索引配置映射或nil
 func convertToVectorIndexConfigs(configs map[string]models.VectorConfig) map[string]schemaConfig.VectorIndexConfig {
 	if len(configs) > 0 {
 		vectorIndexConfigs := make(map[string]schemaConfig.VectorIndexConfig)
@@ -3432,6 +3847,12 @@ func convertToVectorIndexConfigs(configs map[string]models.VectorConfig) map[str
 // It drops the selected vector index, creates a new one, then reindexes it in the background.
 // This function assumes the node is not receiving any traffic besides the
 // debug endpoints and that async indexing is enabled.
+// DebugResetVectorIndex用于调试目的，删除选定的向量索引，创建新索引，然后在后台重新索引
+// 此函数假设节点除了调试端点外不接收任何流量，并且启用了异步索引
+// ctx: 上下文
+// shardName: 分片名称
+// targetVector: 目标向量名称
+// 返回值: 可能的错误
 func (i *Index) DebugResetVectorIndex(ctx context.Context, shardName, targetVector string) error {
 	shard, release, err := i.GetShard(ctx, shardName)
 	if err != nil {
@@ -3470,6 +3891,11 @@ func (i *Index) DebugResetVectorIndex(ctx context.Context, shardName, targetVect
 	return nil
 }
 
+// DebugRepairIndex修复向量索引（用于调试）
+// ctx: 上下文
+// shardName: 分片名称
+// targetVector: 目标向量名称
+// 返回值: 可能的错误
 func (i *Index) DebugRepairIndex(ctx context.Context, shardName, targetVector string) error {
 	shard, release, err := i.GetShard(ctx, shardName)
 	if err != nil {
@@ -3492,6 +3918,9 @@ func (i *Index) DebugRepairIndex(ctx context.Context, shardName, targetVector st
 	return nil
 }
 
+// tenantDirExists检查租户目录是否存在
+// tenantName: 租户名称
+// 返回值: 是否存在和可能的错误
 func (i *Index) tenantDirExists(tenantName string) (bool, error) {
 	tenantPath := shardPath(i.path(), tenantName)
 	if _, err := os.Stat(tenantPath); err != nil {
@@ -3504,6 +3933,10 @@ func (i *Index) tenantDirExists(tenantName string) (bool, error) {
 	return true, nil
 }
 
+// buildReadRoutingPlan构建读取路由计划
+// cl: 一致性级别
+// tenantName: 租户名称
+// 返回值: 读取路由计划和可能的错误
 func (i *Index) buildReadRoutingPlan(cl routerTypes.ConsistencyLevel, tenantName string) (routerTypes.ReadRoutingPlan, error) {
 	planOptions := routerTypes.RoutingPlanBuildOptions{
 		Tenant:           tenantName,
@@ -3517,6 +3950,11 @@ func (i *Index) buildReadRoutingPlan(cl routerTypes.ConsistencyLevel, tenantName
 	return readPlan, nil
 }
 
+// DebugRequantizeIndex重新量化向量索引（用于调试）
+// ctx: 上下文
+// shardName: 分片名称
+// targetVector: 目标向量名称
+// 返回值: 可能的错误
 func (i *Index) DebugRequantizeIndex(ctx context.Context, shardName, targetVector string) error {
 	shard, release, err := i.GetShard(ctx, shardName)
 	if err != nil {
